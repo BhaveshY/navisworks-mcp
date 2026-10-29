@@ -1,0 +1,21 @@
+{
+  "name": "navisworks-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "install-plugin": "node scripts/plugin.ts install",
+    "check": "tsc",
+    "test": "node --test --test-concurrency=6 test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  }
+}
