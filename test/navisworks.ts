@@ -1,12 +1,12 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { navisworks } from '../scripts/plugin.ts';
+import { navisworks, type Navisworks } from '../scripts/plugin.ts';
 import { writeIfc } from './fixture/ifc.ts';
 
 const nw = navisworks();
@@ -14,6 +14,12 @@ const instancesDir = join(process.env.LOCALAPPDATA!, 'navisworks-mcp', 'instance
 const autoSaveDir = join(process.env.APPDATA!, 'Autodesk', `Navisworks Manage ${nw.year}`, 'AutoSave');
 
 const autoRecoverKey = `HKCU\\Software\\Autodesk\\Navisworks Manage\\${nw.api}.0\\AutoRecover`;
+
+/// Options a test Navisworks starts with, passed as -options: they hold for that process only and never reach the user's saved options.
+/// 2027 autosaves during a test and sometimes answers with a modal "Reload from Auto-Save?" that blocks the clean exit.
+const sessionOptions: Partial<Record<Navisworks['year'], string>> = {
+	2027: '<optionset name="general"><optionset name="autosave"><option name="enable"><data type="bool">false</data></option></optionset></optionset>',
+};
 
 /// Navisworks offers to reload whatever these values name on its next start, the user's own start included.
 function clearAutoRecover(sessionDir: string) {
@@ -48,7 +54,13 @@ export async function startSession(): Promise<Session> {
 	const path = (...parts: string[]) => join(dir, ...parts.slice(0, -1), `${tag}-${parts.at(-1)}`);
 	const fixture = path('fixture.ifc');
 	writeIfc(fixture);
-	const roamer = spawn(join(nw.dir, 'Roamer.exe'), [fixture], { stdio: 'ignore', env: { ...process.env, NAVISWORKS_MCP_CORE: nw.coreDll } });
+	const options = sessionOptions[nw.year];
+	const optionsFile = path('options.xml');
+	if (options) writeFileSync(optionsFile, `<?xml version="1.0" encoding="UTF-8" ?>
+<exchange xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://download.autodesk.com/us/navisworks/schemas/nw-exchange-12.0.xsd"><optionset name="">${options}</optionset></exchange>
+`);
+	const args = [...(options ? ['-options', optionsFile] : []), fixture];
+	const roamer = spawn(join(nw.dir, 'Roamer.exe'), args, { stdio: 'ignore', env: { ...process.env, NAVISWORKS_MCP_CORE: nw.coreDll } });
 	const pid = roamer.pid!;
 	const registration = join(instancesDir, `${pid}.json`);
 	for (let i = 0; i < 480 && !existsSync(registration); i++) await sleep(250);
