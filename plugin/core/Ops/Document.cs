@@ -81,7 +81,7 @@ namespace NavisworksMcp
         static void Nwd(Ctx c, Args a, Out o)
         {
             var path = Target(a, "nwd");
-            c.Doc.PublishFile(path, new PublishProperties { Title = c.Doc.Title, AllowResave = true });
+            Compat.PublishNwd(c.Doc, path, new PublishProperties { Title = c.Doc.Title, AllowResave = true });
             o.Line($"nwd {path} {Size(path)}");
         }
 

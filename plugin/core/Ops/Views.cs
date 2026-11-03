@@ -158,17 +158,8 @@ namespace NavisworksMcp
             {
                 if (!(r.item is SavedViewpoint vp)) return new object[] { r.path, r.item is SavedViewpointAnimation ? "animation" : "folder", "-", "-" };
                 var overrides = new[] { vp.ContainsVisibilityOverrides ? "hide" : null, vp.ContainsAppearanceOverrides ? "colour" : null }.Where(x => x != null);
-                return new object[] { r.path, "view", string.Join("+", overrides), Clip(vp.Viewpoint) };
+                return new object[] { r.path, "view", string.Join("+", overrides), Compat.Clip(vp.Viewpoint) };
             }));
-        }
-
-        static string Clip(Viewpoint vp)
-        {
-            var clip = vp.InternalClipPlanes;
-            if (clip == null || !clip.IsEnabled()) return "off";
-            if (clip.GetMode() == Autodesk.Navisworks.Api.Interop.LcOaClipPlaneSetMode.eMODE_BOX) return "box";
-            var on = Enumerable.Range(0, clip.Size()).Count(i => clip.Get(i).IsEnabled());
-            return on == 0 ? "off" : on + " plane(s)";
         }
 
         static Step Save(Ctx c, Args a)
@@ -191,7 +182,7 @@ namespace NavisworksMcp
                 var saved = (SavedViewpoint)folder.Children.First(x => x.DisplayName == leaf);
                 vps.ReplaceFromCurrentView(saved);
                 saved = Views.Find(c.Doc, name);
-                return $"{(existing != null ? "replaced" : "saved")} viewpoint \"{name}\" (section {Clip(saved.Viewpoint)}, overrides {(saved.ContainsVisibilityOverrides || saved.ContainsAppearanceOverrides ? "kept" : "none")})";
+                return $"{(existing != null ? "replaced" : "saved")} viewpoint \"{name}\" (section {Compat.Clip(saved.Viewpoint)}, overrides {(saved.ContainsVisibilityOverrides || saved.ContainsAppearanceOverrides ? "kept" : "none")})";
             });
         }
 

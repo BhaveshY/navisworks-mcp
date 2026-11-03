@@ -117,7 +117,7 @@ namespace NavisworksMcp
                 case "status": return Name(r.Status);
                 case "level": return Location(c, r).level;
                 case "grid": return Location(c, r).grid;
-                case "assigned": return string.IsNullOrEmpty(r.AssignedTo) ? null : r.AssignedTo;
+                case "assigned": return Compat.AssignedTo(r);
                 case "group": return (r.Parent as ClashResultGroup)?.DisplayName;
             }
             var m = ItemKey.Match(by);
@@ -136,7 +136,7 @@ namespace NavisworksMcp
             return new object[]
             {
                 r.DisplayName, Name(r.Status), Units.ToMm(c.Doc, r.Distance), a?.DisplayName, a == null ? null : ReadOps.Id(c.Doc, a),
-                b?.DisplayName, b == null ? null : ReadOps.Id(c.Doc, b), level, grid, r.AssignedTo, r.Center == null ? null : Units.Point(c.Doc, r.Center),
+                b?.DisplayName, b == null ? null : ReadOps.Id(c.Doc, b), level, grid, Compat.AssignedTo(r), r.Center == null ? null : Units.Point(c.Doc, r.Center),
                 (r.Parent as ClashResultGroup)?.DisplayName,
             };
         }
@@ -393,18 +393,18 @@ namespace NavisworksMcp
                 {
                     c.CheckCancelled();
                     ClashResult R() => Live<ClashResult>(c, guid) ?? throw new NwError("stale_handle", "a result in " + target.Text + " no longer exists (the test was rerun or deleted)", "read the clashes again and edit the new handle");
-                    if (status != null) data.TestsEditResultStatus(R(), status.Value);
+                    if (status != null) Compat.SetStatus(data, R(), status.Value, user);
                     if (approve)
                     {
-                        data.TestsEditResultStatus(R(), ClashResultStatus.Approved);
-                        data.TestsEditResultApprovedBy(R(), user);
+                        Compat.SetStatus(data, R(), ClashResultStatus.Approved, user);
+                        Compat.SetApprovedBy(data, R(), user);
                         data.TestsEditResultApprovedTime(R(), DateTime.UtcNow);
                     }
-                    if (assign != null) data.TestsEditResultAssignedTo(R(), assign);
+                    if (assign != null) Compat.SetAssignedTo(data, R(), assign);
                     if (comment != null)
                     {
                         var comments = new CommentCollection(R().Comments);
-                        comments.Add(c.Doc.CreateCommentWithUniqueId(comment, CommentStatus.New, user));
+                        comments.Add(Compat.Comment(c.Doc, comment, CommentStatus.New, user));
                         data.TestsEditResultComments(R(), comments);
                     }
                 }

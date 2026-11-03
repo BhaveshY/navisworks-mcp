@@ -6,9 +6,10 @@ import { basename, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { coreDll, navisworksDir } from '../scripts/plugin.ts';
+import { navisworks } from '../scripts/plugin.ts';
 import { writeIfc } from './fixture/ifc.ts';
 
+const nw = navisworks();
 const instancesDir = join(process.env.LOCALAPPDATA!, 'navisworks-mcp', 'instances');
 const autoSaveDir = join(process.env.APPDATA!, 'Autodesk', 'Navisworks Manage 2024', 'AutoSave');
 
@@ -46,7 +47,7 @@ export async function startSession(): Promise<Session> {
 	const path = (...parts: string[]) => join(dir, ...parts.slice(0, -1), `${tag}-${parts.at(-1)}`);
 	const fixture = path('fixture.ifc');
 	writeIfc(fixture);
-	const roamer = spawn(join(navisworksDir, 'Roamer.exe'), [fixture], { stdio: 'ignore', env: { ...process.env, NAVISWORKS_MCP_CORE: coreDll } });
+	const roamer = spawn(join(nw.dir, 'Roamer.exe'), [fixture], { stdio: 'ignore', env: { ...process.env, NAVISWORKS_MCP_CORE: nw.coreDll } });
 	const pid = roamer.pid!;
 	const registration = join(instancesDir, `${pid}.json`);
 	for (let i = 0; i < 480 && !existsSync(registration); i++) await sleep(250);

@@ -3,13 +3,33 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-export const navisworksDir = process.env.NAVISWORKS_DIR ?? 'C:\\Program Files\\Autodesk\\Navisworks Manage 2024';
+/// Every supported Navisworks Manage, oldest first. `api` is the major version of Autodesk.Navisworks.Api, which also names the bundle series and the registry key.
+const versions = [
+	{ year: 2024, api: 21 },
+	{ year: 2027, api: 24 },
+] as const;
+
+export type Navisworks = (typeof versions)[number] & { dir: string; out: string; coreDll: string };
+
 const frameworkDir = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319';
 const root = resolve(import.meta.dirname, '..');
-export const outDir = join(root, 'build');
-export const coreDll = join(outDir, 'NavisworksMcp.Core.dll');
-const shimDll = join(outDir, 'NavisworksMcp.dll');
-export const bundleDir = join(process.env.APPDATA!, 'Autodesk', 'ApplicationPlugins', 'NavisworksMcp.bundle');
+const newtonsoft = join(root, 'plugin', 'lib', 'Newtonsoft.Json.dll');
+const bundleDir = join(process.env.APPDATA!, 'Autodesk', 'ApplicationPlugins', 'NavisworksMcp.bundle');
+
+export const installed: Navisworks[] = versions
+	.map((v) => {
+		const out = join(root, 'build', String(v.year));
+		return { ...v, dir: `C:\\Program Files\\Autodesk\\Navisworks Manage ${v.year}`, out, coreDll: join(out, 'NavisworksMcp.Core.dll') };
+	})
+	.filter((nw) => existsSync(join(nw.dir, 'Roamer.exe')));
+
+/// The installed Navisworks for `year`, or the newest installed one.
+export function navisworks(year = process.env.NAVISWORKS_VERSION): Navisworks {
+	const nw = year ? installed.find((x) => String(x.year) === year) : installed.at(-1);
+	if (nw) return nw;
+	const have = installed.length ? `installed: ${installed.map((x) => x.year).join(', ')}` : 'none is installed';
+	throw new Error(`Navisworks Manage ${year ?? ''} is not installed or not supported (supported: ${versions.map((v) => v.year).join(', ')}; ${have})`);
+}
 
 const frameworkRefs = ['mscorlib', 'System', 'System.Core', 'System.Data', 'System.Drawing', 'System.Windows.Forms', 'System.Xml', 'System.Xml.Linq', 'Microsoft.CSharp'];
 const navisworksRefs = [
@@ -19,7 +39,6 @@ const navisworksRefs = [
 	'Autodesk.Navisworks.Takeoff',
 	'Autodesk.Navisworks.ComApi',
 	'Autodesk.Navisworks.Interop.ComApi',
-	'Newtonsoft.Json',
 ];
 
 function findCsc() {
@@ -31,35 +50,41 @@ function findCsc() {
 	return csc;
 }
 
-function compile(out: string, sourceDir: string, refs: string[]) {
-	const sources = readdirSync(sourceDir, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.cs')).map((f) => join(sourceDir, f));
+const sourcesIn = (dir: string) => readdirSync(dir, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.cs')).map((f) => join(dir, f));
+
+function compile(out: string, sources: string[], refs: string[]) {
 	try {
 		execFileSync(findCsc(), [
 			'-nologo', '-target:library', '-optimize+', '-debug:portable', '-langversion:latest', '-warnaserror+', '-nostdlib',
 			`-out:${out}`,
 			...frameworkRefs.map((r) => `-r:${join(frameworkDir, `${r}.dll`)}`),
-			...refs.map((r) => `-r:${join(navisworksDir, `${r}.dll`)}`),
+			...refs.map((r) => `-r:${r}`),
 			...sources,
 		], { stdio: 'inherit' });
 	} catch {
-		console.error(`compiling ${out} failed`);
-		process.exit(1);
+		throw new Error(`compiling ${out} failed`);
 	}
 }
 
-export function build() {
-	mkdirSync(outDir, { recursive: true });
-	compile(coreDll, join(root, 'plugin', 'core'), navisworksRefs);
-	compile(shimDll, join(root, 'plugin', 'shim'), ['Autodesk.Navisworks.Api']);
+/// Builds the shim, the core and the core's Newtonsoft.Json into nw.out, against that version's API.
+export function build(nw: Navisworks) {
+	mkdirSync(nw.out, { recursive: true });
+	const api = (name: string) => join(nw.dir, `${name}.dll`);
+	compile(nw.coreDll, [...sourcesIn(join(root, 'plugin', 'core')), join(root, 'plugin', 'compat', `${nw.year}.cs`)], [...navisworksRefs.map(api), newtonsoft]);
+	compile(join(nw.out, 'NavisworksMcp.dll'), sourcesIn(join(root, 'plugin', 'shim')), [api('Autodesk.Navisworks.Api')]);
+	copyFileSync(newtonsoft, join(nw.out, 'Newtonsoft.Json.dll'));
 }
 
 /// The shim gets a content-hashed file name, so installing over a running Navisworks never hits a locked file.
 export function install() {
+	const nw = navisworks('2024');
+	build(nw);
+	const shimDll = join(nw.out, 'NavisworksMcp.dll');
 	const contents = join(bundleDir, 'Contents');
 	mkdirSync(contents, { recursive: true });
 	const shim = `NavisworksMcp.${createHash('sha256').update(readFileSync(shimDll)).digest('hex').slice(0, 12)}.dll`;
 	if (!existsSync(join(contents, shim))) copyFileSync(shimDll, join(contents, shim));
-	copyFileSync(coreDll, join(contents, 'NavisworksMcp.Core.dll'));
+	copyFileSync(nw.coreDll, join(contents, 'NavisworksMcp.Core.dll'));
 	writeFileSync(join(bundleDir, 'PackageContents.xml'), `<?xml version="1.0" encoding="utf-8"?>
 <ApplicationPackage SchemaVersion="1.0" AutodeskProduct="Navisworks" ProductType="Application" Name="NavisworksMcp" AppVersion="1.0.0" Author="navisworks-mcp">
   <Components Description="Navisworks Manage 2024">
@@ -80,6 +105,11 @@ export function install() {
 }
 
 if (import.meta.main) {
-	build();
-	console.log(process.argv[2] === 'build' ? `built ${outDir}` : `installed ${install()}`);
+	const [command, ...years] = process.argv.slice(2);
+	if (command === 'build') {
+		for (const nw of years.length ? years.map((y) => navisworks(y)) : installed) {
+			build(nw);
+			console.log(`built ${nw.out}`);
+		}
+	} else console.log(`installed ${install()}`);
 }
