@@ -43,6 +43,8 @@ The agent sees seven tools:
 
 Lists return a handle such as `r3` with an exact total. Pass the handle, a slice of it (`r3#0-9`), `selection`, `set:Folder/Name`, `id:0:0/2/1` or an inline search (`?Item.Type = IfcWall`) wherever an op takes items, instead of copying rows. Searches use `Tab.Prop op value` joined by `and` and `or`, and run as native Navisworks searches.
 
+Navisworks 2027 opens IFC with Conversion Method v4 by default, which gives elements no GUID, so Quantification can't take them off. For takeoff from IFC on 2027, set Options > File Readers > IFC > Conversion Method to v3 and reopen the model. v3 converts in a separate SceneConvertServer process that needs a .NET 10 runtime matching the installed ASP.NET Core runtime. Without one, that process crashes on load.
+
 Lengths are in mm, areas in m2, volumes in m3, and dates in ISO format. Every error ends with `next:`, the exact call or action that fixes it.
 
 For example, these calls flag every F90 wall and render the result:
