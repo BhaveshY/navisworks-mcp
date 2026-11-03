@@ -9,6 +9,7 @@ namespace NavisworksMcp
     static class ExportOps
     {
         static int imageSeq;
+        static readonly int Pid = System.Diagnostics.Process.GetCurrentProcess().Id;
 
         public static readonly Op[] All =
         {
@@ -17,7 +18,7 @@ namespace NavisworksMcp
                 "{view:\"QA/Level 1\", w:1600, h:900, inline:true}"),
         };
 
-        /// Absolute output path for a file the agent asked for, or a fresh temp path.
+        /// Absolute output path for a file the agent asked for, or a fresh temp path. The pid keeps the names of Navisworks instances that export in the same second apart.
         public static string OutPath(Args a, string stem, string ext)
         {
             var path = a.Str("path");
@@ -25,7 +26,7 @@ namespace NavisworksMcp
             {
                 var dir = Path.Combine(Path.GetTempPath(), "navisworks-mcp");
                 Directory.CreateDirectory(dir);
-                return Path.Combine(dir, $"{stem}-{DateTime.Now:yyyyMMdd-HHmmss}-{Interlocked.Increment(ref imageSeq)}.{ext}");
+                return Path.Combine(dir, $"{stem}-{DateTime.Now:yyyyMMdd-HHmmss}-{Pid}-{Interlocked.Increment(ref imageSeq)}.{ext}");
             }
             if (!Path.IsPathRooted(path)) throw new NwError("bad_args", $"path \"{path}\" is not absolute", "pass a full path such as C:/Coord/out." + ext);
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)));
