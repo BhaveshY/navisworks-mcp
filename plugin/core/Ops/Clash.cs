@@ -65,6 +65,8 @@ namespace NavisworksMcp
             return data;
         }
 
+        static GroupItem Root(Ctx c) => Data(c).Value.TestsRoot;
+
         static IEnumerable<(string path, ClashTest test)> Tests(IEnumerable<SavedItem> items, string prefix = "")
         {
             foreach (var item in items)
@@ -75,7 +77,7 @@ namespace NavisworksMcp
         }
 
         static ClashTest FindTest(Ctx c, string name) =>
-            Tests(Data(c).Tests).Where(t => t.path == name || t.test.DisplayName == name).Select(t => t.test).FirstOrDefault()
+            Tests(Root(c).Children).Where(t => t.path == name || t.test.DisplayName == name).Select(t => t.test).FirstOrDefault()
             ?? throw new NwError("not_found", $"no clash test \"{name}\"", "list tests with read {what:\"tests\"} and use the exact name");
 
         /// A clash edit or run disposes the wrappers read before it, so ops keep guids and handles keep owned copies,
@@ -149,7 +151,7 @@ namespace NavisworksMcp
 
         static void ListTests(Ctx c, Args a, Out o)
         {
-            var tests = Tests(Data(c).Tests).ToList();
+            var tests = Tests(Root(c).Children).ToList();
             o.Line($"tests {tests.Count:#,0} (exact)");
             if (tests.Count == 0) return;
             o.Table(new[] { "test", "type", "tol", "status", "last run", "results" }.Concat(Statuses.Select(Name)).Concat(new[] { "groups", "a", "b" }), tests.Select(x =>
@@ -286,7 +288,7 @@ namespace NavisworksMcp
         static Step Add(Ctx c, Args a)
         {
             var name = a.Str("name");
-            if (Tests(Data(c).Tests).Any(t => t.path == name || t.test.DisplayName == name))
+            if (Tests(Root(c).Children).Any(t => t.path == name || t.test.DisplayName == name))
                 throw new NwError("bad_args", $"clash test \"{name}\" already exists", $"change it with clash.update {{test:\"{name}\"}} or delete it with clash.delete first");
             var sideA = ReadSide(c, a, "a", name);
             var sideB = ReadSide(c, a, "b", name);
@@ -297,7 +299,7 @@ namespace NavisworksMcp
             {
                 Fill(c, test.SelectionA, sideA);
                 Fill(c, test.SelectionB, sideB);
-                Data(c).TestsAddCopy(test);
+                Data(c).TestsAddCopy(Root(c), test);
                 return $"added clash test \"{name}\" ({Settings(c, test)}): a {sideA.Plan} · b {sideB.Plan}. next: clash.run {{test:\"{name}\"}}";
             });
         }
@@ -343,8 +345,8 @@ namespace NavisworksMcp
             {
                 var data = Data(c);
                 var live = Live<ClashTest>(c, guid);
-                if (data.Tests.IndexOfGuid(guid) >= 0) data.TestsRemove(live);
-                else data.TestsRemove(live.Parent, live);
+                var root = Root(c);
+                data.TestsRemove(root.Children.IndexOfGuid(guid) >= 0 ? root : live.Parent, live);
                 return $"deleted clash test \"{name}\"";
             });
         }
@@ -352,7 +354,7 @@ namespace NavisworksMcp
         static Step Run(Ctx c, Args a)
         {
             var all = a.Str("test") == "all";
-            var tests = (all ? Tests(Data(c).Tests).Select(t => t.test) : new[] { FindTest(c, a.Str("test")) }).Select(t => (guid: t.Guid, name: t.DisplayName)).ToList();
+            var tests = (all ? Tests(Root(c).Children).Select(t => t.test) : new[] { FindTest(c, a.Str("test")) }).Select(t => (guid: t.Guid, name: t.DisplayName)).ToList();
             if (tests.Count == 0) throw new NwError("not_found", "the document has no clash tests", "add one with clash.add");
             return new Step("run " + string.Join(", ", tests.Select(t => $"\"{t.name}\"")), () =>
             {
