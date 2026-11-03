@@ -23,17 +23,18 @@ namespace NavisworksMcp
         }
 
         /// Returns the folder for a path's parent, creating missing folders through `add`.
-        public static GroupItem Folder(GroupItem root, string path, System.Action<GroupItem, SavedItem> add)
+        /// Navisworks 2027 leaves an item added to the selection sets out of the children of a group read before the add, so a new folder is looked up again from a fresh root.
+        public static GroupItem Folder(System.Func<GroupItem> root, string path, System.Action<GroupItem, SavedItem> add)
         {
             var parts = path.Split('/');
-            var folder = root;
-            foreach (var part in parts.Take(parts.Length - 1))
+            var folder = root();
+            for (var i = 0; i < parts.Length - 1; i++)
             {
-                var next = folder.Children.FirstOrDefault(x => x.DisplayName == part) as GroupItem;
+                var next = folder.Children.FirstOrDefault(x => x.DisplayName == parts[i]) as GroupItem;
                 if (next == null)
                 {
-                    add(folder, new FolderItem { DisplayName = part });
-                    next = (GroupItem)folder.Children.First(x => x.DisplayName == part);
+                    add(folder, new FolderItem { DisplayName = parts[i] });
+                    next = (GroupItem)Lookup(root(), string.Join("/", parts, 0, i + 1));
                 }
                 folder = next;
             }
@@ -95,7 +96,7 @@ namespace NavisworksMcp
                 var sets = c.Doc.SelectionSets;
                 var set = search != null ? new SelectionSet(search.ToSearch(c)) : new SelectionSet(items);
                 set.DisplayName = Sets.Leaf(name);
-                var folder = Sets.Folder(sets.RootItem, name, sets.AddCopy);
+                var folder = Sets.Folder(() => sets.RootItem, name, sets.AddCopy);
                 var existing = folder.Children.FirstOrDefault(x => x.DisplayName == set.DisplayName);
                 if (existing != null) sets.ReplaceWithCopy(folder, folder.Children.IndexOf(existing), set);
                 else sets.AddCopy(folder, set);

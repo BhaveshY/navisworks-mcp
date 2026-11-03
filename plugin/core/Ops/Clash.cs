@@ -270,7 +270,7 @@ namespace NavisworksMcp
         {
             var sets = c.Doc.SelectionSets;
             var set = new SelectionSet(search.ToSearch(c)) { DisplayName = Sets.Leaf(path) };
-            var folder = Sets.Folder(sets.RootItem, path, sets.AddCopy);
+            var folder = Sets.Folder(() => sets.RootItem, path, sets.AddCopy);
             var at = folder.Children.IndexOfDisplayName(set.DisplayName);
             if (at >= 0) sets.ReplaceWithCopy(folder, at, set);
             else sets.AddCopy(folder, set);

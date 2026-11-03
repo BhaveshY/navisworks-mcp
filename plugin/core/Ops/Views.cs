@@ -171,7 +171,7 @@ namespace NavisworksMcp
             {
                 if (box != null) Views.Zoom(c.Doc, box);
                 var vps = c.Doc.SavedViewpoints;
-                var folder = Sets.Folder(vps.RootItem, name, vps.AddCopy);
+                var folder = Sets.Folder(() => vps.RootItem, name, vps.AddCopy);
                 var leaf = Sets.Leaf(name);
                 // CaptureRuntimeOverrides holds the hide and colour overrides but no camera; ReplaceFromCurrentView adds camera and section.
                 var vp = vps.CaptureRuntimeOverrides();

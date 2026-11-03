@@ -60,8 +60,8 @@ namespace NavisworksMcp
                 case "bbox": return Units.Box(doc, item.BoundingBox());
                 case "path": return string.Join("/", item.AncestorsAndSelf.Select(x => x.DisplayName));
                 case "hidden": return item.AncestorsAndSelf.Any(x => x.IsHidden) ? "true" : "false";
-                case "color": return item.HasGeometry ? Units.Hex(item.Geometry.ActiveColor) : "-";
-                case "transparency": return item.HasGeometry ? Out.Num(item.Geometry.ActiveTransparency * 100) : "-";
+                case "color": return item.FindFirstGeometry() is ModelGeometry g ? Units.Hex(g.ActiveColor) : "-";
+                case "transparency": return item.FindFirstGeometry() is ModelGeometry t ? Out.Num(t.ActiveTransparency * 100) : "-";
             }
             var dot = col.IndexOf('.');
             if (dot < 0) throw new NwError("bad_args", $"column \"{col}\" is not Tab.Prop, bbox, path, hidden, color or transparency", "write columns as Tab.Prop, e.g. Element.Category");

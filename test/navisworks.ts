@@ -24,7 +24,8 @@ function clearAutoRecover(sessionDir: string) {
 		return;
 	}
 	for (const name of ['LastSaved', 'FileWas']) {
-		const value = new RegExp(`^\\s+${name}\\s+REG_SZ\\s+(.*)$`, 'm').exec(values)?.[1]?.trim();
+		// Navisworks 2027 stores the path as the caller spelled it, forward slashes included.
+		const value = new RegExp(`^\\s+${name}\\s+REG_SZ\\s+(.*)$`, 'm').exec(values)?.[1]?.trim().replaceAll('/', '\\');
 		const ours = value?.startsWith(sessionDir) || (value?.startsWith(autoSaveDir) && !existsSync(value));
 		if (ours) execFileSync('reg', ['add', autoRecoverKey, '/v', name, '/t', 'REG_SZ', '/d', '', '/f']);
 	}
