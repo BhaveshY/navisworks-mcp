@@ -462,6 +462,7 @@ namespace NavisworksMcp
                 if (skipped > 0) text += $"; {skipped:#,0} were already in it";
                 if (noGuid > 0) text += $"; {noGuid:#,0} without a GUID were left out";
                 if (!bbox && modelValues < made.Count) text += ". next: for quantities from geometry, delete these takeoffs and take off again with from:\"bbox\"";
+                else if (noGuid > 0) text += ". next: Quantification links items by GUID; for an IFC model, set Options > File Readers > IFC > Conversion Method to v3 (v4, the 2027 default, assigns none), reopen the model, then take off again";
                 return text;
             });
         }
