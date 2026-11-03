@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Link, stateDir, type Catalog, type Reply } from './link.ts';
 
-const instructions = `Navisworks Manage 2024. Start with status. Lengths mm, areas m2, volumes m3, angles degrees, dates ISO.
+const instructions = `Navisworks Manage. Start with status. Lengths mm, areas m2, volumes m3, angles degrees, dates ISO.
 read never changes anything; lists return a handle r#. Pass items:"r3", "r3#5", "r3#0-9", "selection", "last", "set:Folder/Name", "id:0:0/2/1" or "?Item.Type = IfcWall" instead of copying rows. Totals are exact.
 Change anything with ONE apply call holding all ops: validated first, one undo step, preview:true plans only, "$0" is the handle made by op 0.
 export writes files. Long work returns a job j#: call job, and never repeat a write that is still running.

@@ -11,9 +11,9 @@ import { writeIfc } from './fixture/ifc.ts';
 
 const nw = navisworks();
 const instancesDir = join(process.env.LOCALAPPDATA!, 'navisworks-mcp', 'instances');
-const autoSaveDir = join(process.env.APPDATA!, 'Autodesk', 'Navisworks Manage 2024', 'AutoSave');
+const autoSaveDir = join(process.env.APPDATA!, 'Autodesk', `Navisworks Manage ${nw.year}`, 'AutoSave');
 
-const autoRecoverKey = 'HKCU\\Software\\Autodesk\\Navisworks Manage\\21.0\\AutoRecover';
+const autoRecoverKey = `HKCU\\Software\\Autodesk\\Navisworks Manage\\${nw.api}.0\\AutoRecover`;
 
 /// Navisworks offers to reload whatever these values name on its next start, the user's own start included.
 function clearAutoRecover(sessionDir: string) {
@@ -69,7 +69,10 @@ export async function startSession(): Promise<Session> {
 	for (let i = 0; ; i++) {
 		const status = await client.callTool({ name: 'status', arguments: {} });
 		const text = (status.content as { text: string }[])[0]!.text;
-		if (text.includes(basename(fixture))) break;
+		if (text.includes(basename(fixture))) {
+			if (!text.includes(`Manage ${nw.year}`)) throw new Error(`expected Navisworks Manage ${nw.year}, status says: ${text}`);
+			break;
+		}
 		if (i > 240) throw new Error(`fixture never finished loading: ${text}`);
 		await sleep(250);
 	}
@@ -105,7 +108,7 @@ export async function startSession(): Promise<Session> {
 			await client.close();
 			const clean = await exited;
 			if (!clean) roamer.kill();
-			for (const f of readdirSync(autoSaveDir)) if (f.startsWith(`${tag}-`)) rmSync(join(autoSaveDir, f), { force: true });
+			for (const f of existsSync(autoSaveDir) ? readdirSync(autoSaveDir) : []) if (f.startsWith(`${tag}-`)) rmSync(join(autoSaveDir, f), { force: true });
 			clearAutoRecover(dir);
 			if (!clean) throw new Error(`Navisworks pid ${pid} did not exit within 30 s of WM_CLOSE and was killed; the next launch will ask to reload`);
 		},

@@ -131,9 +131,9 @@ export class Link {
 		const all = instances();
 		if (this.pinned !== undefined) {
 			const pinned = all.find((i) => i.pid === this.pinned);
-			return pinned ?? fail('not_running', `Navisworks pid ${this.pinned} is not running`, all.length ? `call status {pid:${all[0]!.pid}} to use the running instance` : 'start Navisworks Manage 2024, then call status');
+			return pinned ?? fail('not_running', `Navisworks pid ${this.pinned} is not running`, all.length ? `call status {pid:${all[0]!.pid}} to use the running instance` : 'start Navisworks Manage, then call status');
 		}
-		return all[0] ?? fail('not_running', 'Navisworks is not running', 'start Navisworks Manage 2024 (the plugin loads with it), then call status');
+		return all[0] ?? fail('not_running', 'Navisworks is not running', 'start Navisworks Manage (the plugin loads with it), then call status');
 	}
 
 	async call(tool: string, args: object, onSent: (cancel: () => void) => void = () => {}): Promise<Reply> {

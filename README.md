@@ -2,15 +2,15 @@
 
 # navisworks
 
-An MCP server that drives Autodesk Navisworks Manage 2024: model QA, search and properties, clash detection, viewpoints and sectioning, NWD/NWF/CSV/image output, TimeLiner 4D and Quantification.
+An MCP server that drives Autodesk Navisworks Manage 2024 and 2027: model QA, search and properties, clash detection, viewpoints and sectioning, NWD/NWF/CSV/image output, TimeLiner 4D and Quantification.
 
 A plugin inside Navisworks runs every call on the Navisworks UI thread. A small Node process speaks MCP over stdio and talks to the plugin over a named pipe. A typical read or write takes 5 to 100 ms.
 
 ## Install
 
-You need Navisworks Manage 2024, Node 24 or later, and Visual Studio 2022 Build Tools, which provide `csc.exe`. You don't need a .NET SDK.
+You need Navisworks Manage 2024 or 2027 (or both), Node 24 or later, and Visual Studio 2022 Build Tools, which provide `csc.exe`. You don't need a .NET SDK.
 
-1. Build the plugin and install it as an Autodesk bundle in `%APPDATA%\Autodesk\ApplicationPlugins\NavisworksMcp.bundle`:
+1. Build the plugin and install it as an Autodesk bundle in `%APPDATA%\Autodesk\ApplicationPlugins\NavisworksMcp.bundle`. The install builds the plugin once for each installed Navisworks, against that version's API, and puts every build in the one bundle:
 
 	```
 	npm install
@@ -56,16 +56,21 @@ export {out:[{what:"image", view:"QA/F90 walls", inline:true}]}
 ## Develop
 
 ```
-node scripts/plugin.ts build      # compile into build/ only
-npx tsc                           # typecheck the server and tests
-npm test                          # end-to-end tests
+node scripts/plugin.ts build [year...]   # compile into build/<year>/ only
+npx tsc                                  # typecheck the server and tests
+npm test                                 # end-to-end tests against every installed Navisworks, 2024 then 2027
+npm test -- 2027                         # end-to-end tests against one version
+npm test -- 2027 test/clash.test.ts      # one version, one file
 ```
 
-The tests are end to end only. Each test file launches its own Navisworks and loads the plugin from `build/`, through the `NAVISWORKS_MCP_CORE` variable read by the installed shim. Each test drives the real server over stdio with the MCP SDK client, then closes Navisworks normally. A generated IFC model (`test/fixture/`) gives known answers: the tests derive every expected count, clash and quantity from its definition. Your own Navisworks session is never touched. A test run leaves no autosave or crash-recovery state behind.
+The tests are end to end only. `npm test` builds each version, runs the whole suite against it, and prints a pass or fail line per version. Each test file launches its own Navisworks and loads the plugin from `build/<year>/`, through the `NAVISWORKS_MCP_CORE` variable read by the installed shim. Each test drives the real server over stdio with the MCP SDK client, then closes Navisworks normally. A generated IFC model (`test/fixture/`) gives known answers: the tests derive every expected count, clash and quantity from its definition. Your own Navisworks session is never touched. A test run leaves no autosave or crash-recovery state behind.
 
 The code is laid out like this:
 
-- `plugin/shim/Shim.cs` is the installed plugin. It loads the core from bytes, so rebuilding never fights a running Navisworks that has the file open.
+- `scripts/plugin.ts` holds the table of supported versions. Each row's year and API version give its install folder, bundle series, build folder and compat file.
+- `plugin/shim/Shim.cs` is the installed plugin. It loads the core and the core's dependencies from bytes, so rebuilding never fights a running Navisworks that has the file open.
+- `plugin/compat/<year>.cs` holds the few calls whose API differs between versions. The build compiles the core with the file for its version.
+- `plugin/lib/Newtonsoft.Json.dll` is Newtonsoft.Json 13.0.3 (MIT license, beside it). Navisworks 2027 does not ship it, so every build carries it.
 - `plugin/core/Host.cs` owns the pipe server, the jobs and the marshalling onto the UI thread.
 - `plugin/core/Catalog.cs` holds the op table. Each op's signature string generates its JSON schema, its argument validation and its `help` text.
 - `plugin/core/Targets.cs` holds handles, the target grammar and the `where` language.

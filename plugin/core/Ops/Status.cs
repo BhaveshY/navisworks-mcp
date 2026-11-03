@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Autodesk.Navisworks.Api;
@@ -22,7 +23,7 @@ namespace NavisworksMcp
         static void Status(Ctx c, Args a, Out o)
         {
             var d = c.Doc;
-            o.Line($"navisworks pid {c.Host.Pid} · Manage 2024 · core {Path.GetFileName(c.Host.CorePath)}");
+            o.Line($"navisworks pid {c.Host.Pid} · {Application.Version.RuntimeProductName} {Process.GetCurrentProcess().MainModule.FileVersionInfo.FileVersion} · core {Path.GetFileName(c.Host.CorePath)}");
             if (d.IsClear) { o.Line("no document open. next: apply {ops:[{op:\"open\", path:\"C:/path/model.nwd\"}]}"); return; }
             var file = string.IsNullOrEmpty(d.FileName) ? d.Title : d.FileName;
             o.Line($"doc {file} · units mm (document {d.Units}) · selection {d.CurrentSelection.SelectedItems.Count} · viewpoints {d.SavedViewpoints.RootItem.Children.Count} · sets {d.SelectionSets.RootItem.Children.Count}");

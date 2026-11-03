@@ -9,7 +9,7 @@
   "scripts": {
     "install-plugin": "node scripts/plugin.ts install",
     "check": "tsc",
-    "test": "node --test --test-concurrency=6 test/*.test.ts"
+    "test": "node scripts/plugin.ts test"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

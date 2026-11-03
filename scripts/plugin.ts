@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -75,28 +75,35 @@ export function build(nw: Navisworks) {
 	copyFileSync(newtonsoft, join(nw.out, 'Newtonsoft.Json.dll'));
 }
 
+/// Installs one bundle with a component per installed Navisworks, each built against its own API, and removes everything else in it.
 /// The shim gets a content-hashed file name, so installing over a running Navisworks never hits a locked file.
 export function install() {
-	const nw = navisworks('2024');
-	build(nw);
-	const shimDll = join(nw.out, 'NavisworksMcp.dll');
 	const contents = join(bundleDir, 'Contents');
-	mkdirSync(contents, { recursive: true });
-	const shim = `NavisworksMcp.${createHash('sha256').update(readFileSync(shimDll)).digest('hex').slice(0, 12)}.dll`;
-	if (!existsSync(join(contents, shim))) copyFileSync(shimDll, join(contents, shim));
-	copyFileSync(nw.coreDll, join(contents, 'NavisworksMcp.Core.dll'));
+	const keep = new Set<string>();
+	const components = installed.map((nw) => {
+		build(nw);
+		const dir = join(contents, String(nw.year));
+		const shimDll = join(nw.out, 'NavisworksMcp.dll');
+		const shim = `NavisworksMcp.${createHash('sha256').update(readFileSync(shimDll)).digest('hex').slice(0, 12)}.dll`;
+		mkdirSync(dir, { recursive: true });
+		if (!existsSync(join(dir, shim))) copyFileSync(shimDll, join(dir, shim));
+		for (const dll of ['NavisworksMcp.Core.dll', 'Newtonsoft.Json.dll']) copyFileSync(join(nw.out, dll), join(dir, dll));
+		for (const file of [dir, ...[shim, 'NavisworksMcp.Core.dll', 'Newtonsoft.Json.dll'].map((f) => join(dir, f))]) keep.add(file);
+		return `  <Components Description="Navisworks Manage ${nw.year}">
+    <RuntimeRequirements OS="Win64" Platform="NAVMAN" SeriesMin="Nw${nw.api}" SeriesMax="Nw${nw.api}" />
+    <ComponentEntry AppName="NavisworksMcp" ModuleName="./Contents/${nw.year}/${shim}" AppType="ManagedPlugin" />
+  </Components>
+`;
+	});
 	writeFileSync(join(bundleDir, 'PackageContents.xml'), `<?xml version="1.0" encoding="utf-8"?>
 <ApplicationPackage SchemaVersion="1.0" AutodeskProduct="Navisworks" ProductType="Application" Name="NavisworksMcp" AppVersion="1.0.0" Author="navisworks-mcp">
-  <Components Description="Navisworks Manage 2024">
-    <RuntimeRequirements OS="Win64" Platform="NAVMAN" SeriesMin="Nw21" SeriesMax="Nw21" />
-    <ComponentEntry AppName="NavisworksMcp" ModuleName="./Contents/${shim}" AppType="ManagedPlugin" />
-  </Components>
-</ApplicationPackage>
+${components.join('')}</ApplicationPackage>
 `);
-	for (const old of readdirSync(contents)) {
-		if (old === shim || old === 'NavisworksMcp.Core.dll') continue;
+	for (const entry of readdirSync(contents, { recursive: true, encoding: 'utf8' }).sort().reverse()) {
+		const path = join(contents, entry);
+		if (keep.has(path)) continue;
 		try {
-			rmSync(join(contents, old));
+			rmSync(path, { recursive: true });
 		} catch {
 			// A running Navisworks still holds the old shim open; the next install removes it.
 		}
@@ -104,12 +111,38 @@ export function install() {
 	return bundleDir;
 }
 
+/// Runs the e2e files against each version in turn, building each first. Every version runs even after one fails.
+function test(args: string[]) {
+	const years = args.filter((a) => /^\d{4}$/.test(a));
+	const files = args.filter((a) => !years.includes(a));
+	const chosen = years.length ? years.map((y) => navisworks(y)) : installed;
+	const verdicts = chosen.map((nw) => {
+		console.log(`\n# Navisworks Manage ${nw.year}`);
+		try {
+			build(nw);
+		} catch (e) {
+			return { nw, pass: false, why: (e as Error).message };
+		}
+		const run = spawnSync(process.execPath, ['--test', '--test-concurrency=6', ...(files.length ? files : ['test/*.test.ts'])], {
+			cwd: root,
+			stdio: 'inherit',
+			env: { ...process.env, NAVISWORKS_VERSION: String(nw.year) },
+		});
+		return { nw, pass: run.status === 0, why: run.status === 0 ? '' : `node --test exited ${run.status ?? run.signal}` };
+	});
+	console.log('');
+	for (const v of verdicts) console.log(`Navisworks Manage ${v.nw.year}: ${v.pass ? 'pass' : `FAIL (${v.why})`}`);
+	return verdicts.every((v) => v.pass) ? 0 : 1;
+}
+
 if (import.meta.main) {
-	const [command, ...years] = process.argv.slice(2);
+	const [command, ...args] = process.argv.slice(2);
 	if (command === 'build') {
-		for (const nw of years.length ? years.map((y) => navisworks(y)) : installed) {
+		for (const nw of args.length ? args.map((y) => navisworks(y)) : installed) {
 			build(nw);
 			console.log(`built ${nw.out}`);
 		}
-	} else console.log(`installed ${install()}`);
+	} else if (command === 'install') console.log(`installed ${install()}`);
+	else if (command === 'test') process.exitCode = test(args);
+	else throw new Error('usage: node scripts/plugin.ts build [year...] | install | test [year...] [file...]');
 }
