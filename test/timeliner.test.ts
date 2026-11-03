@@ -7,7 +7,12 @@ import { boxes } from './fixture/scene.ts';
 import { startSession, type Session } from './navisworks.ts';
 
 let nw: Session;
-before(async () => (nw = await startSession()));
+before(async () => {
+	nw = await startSession();
+	// The Construct green is 90% transparent, so the background shows through it. While simulating, 2024 darkens a gradient background and
+	// 2027 keeps the document's own, so both render over the colour 2024 simulates behind the walls; neither darkens a plain background.
+	await nw.call('script', { code: 'nw.Doc.SetPlainBackground(Color.FromByteRGB(20, 24, 30)); return "background pinned";' });
+});
 after(() => nw?.close());
 
 const count = (pred: (b: (typeof boxes)[number]) => boolean) => boxes.filter(pred).length;
