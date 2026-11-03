@@ -16,9 +16,14 @@ const autoSaveDir = join(process.env.APPDATA!, 'Autodesk', `Navisworks Manage ${
 const autoRecoverKey = `HKCU\\Software\\Autodesk\\Navisworks Manage\\${nw.api}.0\\AutoRecover`;
 
 /// Options a test Navisworks starts with, passed as -options: they hold for that process only and never reach the user's saved options.
+/// They reach only files opened after launch, so a version with options opens the fixture again once the command-line copy has loaded.
+/// Opening it into an empty launch instead races Navisworks startup, which fails the open or replaces the document with Untitled.
 /// 2027 autosaves during a test and sometimes answers with a modal "Reload from Auto-Save?" that blocks the clean exit.
+/// 2027's default IFC reader gives no item an InstanceGuid, which takeoff needs; Conversion Method v3 reads them as 2024 does.
 const sessionOptions: Partial<Record<Navisworks['year'], string>> = {
-	2027: '<optionset name="general"><optionset name="autosave"><option name="enable"><data type="bool">false</data></option></optionset></optionset>',
+	2027:
+		'<optionset name="general"><optionset name="autosave"><option name="enable"><data type="bool">false</data></option></optionset></optionset>' +
+		'<optionset name="file_readers"><optionset name="LcNwcLoaderPlugin:lcldifc"><option name="load_method"><data type="name"><name internal="lcldifc_load_method:2">v3</name></data></option></optionset></optionset>',
 };
 
 /// Navisworks offers to reload whatever these values name on its next start, the user's own start included.
@@ -99,6 +104,13 @@ export async function startSession(): Promise<Session> {
 			images: content.filter((c) => c.type === 'image').length,
 		};
 	};
+
+	if (options) {
+		let opened = await callRaw('apply', { ops: [{ op: 'open', path: fixture }] });
+		for (let job; (job = /next: job \{id:"(j\d+)"/.exec(opened.text)?.[1]); ) opened = await callRaw('job', { id: job, wait: 60000 });
+		if (opened.isError) throw new Error(`reopening the fixture with the session options failed: ${opened.text}`);
+	}
+
 	return {
 		dir,
 		fixture,
