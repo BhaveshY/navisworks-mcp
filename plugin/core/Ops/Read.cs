@@ -90,7 +90,7 @@ namespace NavisworksMcp
             if (group != null)
             {
                 var counts = Tally(h.Rows.Cast<ModelItem>().Select(x => Exact(c.Doc, x, group))).Select(g => $"{g.label} {g.count:#,0}");
-                head += $" Â· by {group}: " + string.Join(" Â· ", counts);
+                head += $" · by {group}: " + string.Join(" · ", counts);
             }
             o.Line(head);
             if (h.Rows.Count == 0) return;
@@ -106,11 +106,11 @@ namespace NavisworksMcp
             var tabs = new HashSet<string>(a.List("tabs"), StringComparer.OrdinalIgnoreCase);
             foreach (var item in items.Take(a.Int("limit")))
             {
-                o.Line($"{Id(c.Doc, item)} {item.DisplayName} Â· {item.ClassDisplayName}");
+                o.Line($"{Id(c.Doc, item)} {item.DisplayName} · {item.ClassDisplayName}");
                 foreach (var cat in item.PropertyCategories)
                 {
                     if (tabs.Count > 0 && !tabs.Contains(cat.DisplayName)) continue;
-                    o.Line($"[{cat.DisplayName}] " + string.Join(" Â· ", cat.Properties.Select(p => p.DisplayName + "=" + Units.Value(c.Doc, p, item, cat.DisplayName))));
+                    o.Line($"[{cat.DisplayName}] " + string.Join(" · ", cat.Properties.Select(p => p.DisplayName + "=" + Units.Value(c.Doc, p, item, cat.DisplayName))));
                 }
             }
             if (items.Count > a.Int("limit")) o.Line($"{items.Count - a.Int("limit"):#,0} more items not shown; raise limit or narrow items");
@@ -166,7 +166,7 @@ namespace NavisworksMcp
                 var geometry = all.Count(x => x.HasGeometry);
                 o.Line($"model {i} {root.DisplayName}: {all.Count:#,0} items, {geometry:#,0} with geometry, extents {Units.Box(d, root.BoundingBox())} mm");
                 var types = all.Where(x => x.HasGeometry).GroupBy(x => x.ClassDisplayName).OrderByDescending(g => g.Count()).Take(15);
-                o.Line("  geometry by type: " + string.Join(" Â· ", types.Select(g => $"{g.Key} {g.Count():#,0}")));
+                o.Line("  geometry by type: " + string.Join(" · ", types.Select(g => $"{g.Key} {g.Count():#,0}")));
             }
         }
     }

@@ -96,5 +96,23 @@ test('Quantification hardening through MCP', async t => {
 				near(result[0]!.at(-1)!, number(props.at(-1)!.replace(' m3', '')));
 			}
 		});
+		await t.test('C13 A7 takeoff pages and property totals avoid full-model reconstruction', async () => {
+			// Existing hospital catalog: 3,320 takeoffs in an 80,000+ node model.
+			const expected = Number(await call('script', { code: 'var tk=Autodesk.Navisworks.Api.Takeoff.DocumentExtensions.GetTakeoff(nw.Doc); using(var cmd=tk.Database.Value.CreateCommand()){cmd.CommandText="SELECT COUNT(*) FROM TK_Object"; return cmd.ExecuteScalar();}' }));
+			for (const args of [{ what: 'qto', level: 'takeoffs', limit: 1 }, { what: 'qto', by: 'Element.Category', limit: 20 }]) {
+				for (let repeat = 0; repeat < 2; repeat++) {
+					const start = performance.now();
+					const text = await call('read', args);
+					const ms = performance.now() - start;
+					t.diagnostic(`${JSON.stringify(args)} repeat ${repeat}: ${ms.toFixed(1)} ms`);
+					assert.ok(rows(text).length > 0);
+					if (args.level === 'takeoffs') {
+						assert.equal(rows(text).length, 1);
+						assert.equal(number(/takeoffs ([\d,]+) \(exact\)/.exec(text)![1]!), expected);
+					} else assert.equal(rows(text).reduce((sum, row) => sum + number(row[2]!), 0), expected);
+					assert.ok(ms < 2000, `interactive QTO took ${ms.toFixed(1)} ms`);
+				}
+			}
+		});
 	} finally { await nw.close(); }
 });

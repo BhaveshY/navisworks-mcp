@@ -221,10 +221,12 @@ namespace NavisworksMcp
         /// Count, length (m), area (m2), volume (m3) of one row of a takeoff table, through the API so units convert.
         static void Fill(TakeoffTable table, long id, QtoRow row)
         {
-            var variables = table.SelectVariables(id).ToDictionary(v => v.Definition.Name);
-            foreach (var v in variables.Values)
+            var variables = table.SelectVariables(id);
+            foreach (var name in new[] { "Count", "Length", "Area", "Volume" })
             {
-                var name = v.Definition.Name;
+                var index = variables.Find(name);
+                if (index < 0) continue;
+                var v = variables.GetItem(index);
                 var value = v.ActiveValue;
                 if (value == null || value.IsNone) continue;
                 var x = value.IsDouble ? value.ToDouble() : value.IsInt32 ? value.ToInt32() : double.NaN;
@@ -232,8 +234,10 @@ namespace NavisworksMcp
                 var unit = v.ActiveUnits;
                 // Old variable-unit catalogs can have a direct ModelArea/ModelVolume formula
                 // with no calculation unit. Only that exact formula can inherit an input unit.
-                if (unit == TakeoffUnits.Unspecified && v.IsAbleToGetFormula && variables.TryGetValue("Model" + name, out var input))
+                var inputIndex = unit == TakeoffUnits.Unspecified ? variables.Find("Model" + name) : -1;
+                if (inputIndex >= 0 && v.IsAbleToGetFormula)
                 {
+                    var input = variables.GetItem(inputIndex);
                     var formula = (v.ActiveFormula ?? "").Trim().TrimStart('=').Trim().Trim('[', ']');
                     if (formula == input.Definition.Name) unit = input.ActiveUnits;
                 }
@@ -258,10 +262,12 @@ namespace NavisworksMcp
             // NULL ModelItemID denotes a virtual/unlinked takeoff, not the first GUID-less model node.
             want = new HashSet<Guid>(want.Where(g => g != Guid.Empty));
             if (want.Count == 0) return found;
-            foreach (var x in doc.Models.RootItemDescendantsAndSelf)
+            foreach (var guid in want)
             {
-                if (want.Contains(x.InstanceGuid) && !found.ContainsKey(x.InstanceGuid)) found[x.InstanceGuid] = x;
-                if (found.Count == want.Count) break;
+                // Native GUID filtering uses Navisworks' link lookup; do not construct a managed
+                // ModelItem wrapper for every node just to resolve a few takeoff references.
+                var x = doc.Models.RootItemDescendantsAndSelf.WhereInstanceGuid(guid).FirstOrDefault();
+                if (x != null) found[guid] = x;
             }
             return found;
         }
@@ -315,12 +321,12 @@ namespace NavisworksMcp
                     }
                     return row;
                 }).ToList();
-            var needModel = level == "takeoffs" || by != "group";
+            var needModel = level == "totals" && by != "group";
             var models = needModel ? ByGuid(c.Doc, new HashSet<Guid>(objects.Select(t => t.Guid))) : new Dictionary<Guid, ModelItem>();
             var rows = objects.Select(t =>
             {
                 models.TryGetValue(t.Guid, out var mi);
-                var row = new QtoRow { Level = "takeoffs", Id = t.Id, Parent = t.Item, ModelGuid = t.Guid, Identity = Identity(tk).Token(t.Id), Path = items[t.Item].Path, Model = mi?.DisplayName ?? "-", Takeoffs = 1 };
+                var row = new QtoRow { Level = "takeoffs", Id = t.Id, Parent = t.Item, ModelGuid = t.Guid, Identity = Identity(tk).Token(t.Id), Path = items[t.Item].Path, Model = needModel ? mi?.DisplayName ?? "-" : null, Takeoffs = 1 };
                 Fill(tk.Objects, t.Id, row);
                 return (t, row, mi);
             }).ToList();
@@ -342,6 +348,12 @@ namespace NavisworksMcp
         }
 
         static string Unknown(IEnumerable<string> values) => values.Any(x => x != null) ? "unknown (source units unresolved)" : null;
+
+        static void Names(Document doc, IEnumerable<QtoRow> rows)
+        {
+            foreach (var row in rows.Where(r => r.Level == "takeoffs" && r.Model == null))
+                row.Model = row.ModelGuid == Guid.Empty ? "-" : doc.Models.RootItemDescendantsAndSelf.WhereInstanceGuid(row.ModelGuid).FirstOrDefault()?.DisplayName ?? "-";
+        }
 
         static string[] Header(string level, string by) =>
             level == "catalog" ? new[] { "#", "kind", "path", "wbs", "takeoffs" }
@@ -383,7 +395,7 @@ namespace NavisworksMcp
             var rows = h.Rows.Cast<QtoRow>().ToList();
             var head = $"{h.Name} qto {level}" + (level == "totals" ? " by " + (by ?? "item") : "") + $" {rows.Count:#,0} (exact)";
             if (level != "catalog")
-                head += $" Â· all: count {Out.Num(Sum(rows.Select(r => r.Count)) ?? 0)}, length {Out.Num((Sum(rows.Select(r => r.Length)) ?? 0) * 1000)} mm, area {Out.Num(Sum(rows.Select(r => r.Area)) ?? 0)} m2, volume {Out.Num(Sum(rows.Select(r => r.Volume)) ?? 0)} m3";
+                head += $" · all: count {Out.Num(Sum(rows.Select(r => r.Count)) ?? 0)}, length {Out.Num((Sum(rows.Select(r => r.Length)) ?? 0) * 1000)} mm, area {Out.Num(Sum(rows.Select(r => r.Area)) ?? 0)} m2, volume {Out.Num(Sum(rows.Select(r => r.Volume)) ?? 0)} m3";
             o.Line(head);
             if (rows.Any(r => r.RawLength != null || r.RawArea != null || r.RawVolume != null))
                 o.Line("Quantities with unresolved units retain their source unit; metric sums exclude them. Inspect takeoffs for original values.");
@@ -391,6 +403,7 @@ namespace NavisworksMcp
             var limit = a.Int("limit");
             var page = a.Int("page");
             var start = Math.Max(0, (page - 1) * limit);
+            Names(c.Doc, rows.Skip(start).Take(limit));
             o.Table(Header(level, by), rows.Skip(start).Take(limit).Select((r, i) => Cells(r, start + i, level, Out.Num)));
             if (start + limit < rows.Count) o.More("qto", h, page, limit);
         }
@@ -623,6 +636,7 @@ namespace NavisworksMcp
             var by = a.Str("by");
             if (!IsSetUp(Tk(c))) throw new NwError("not_found", "Quantification is not set up in this document", "take off items first with qto.item.add and qto.takeoff");
             var rows = Rows(c, level, by, null);
+            Names(c.Doc, rows);
             var path = ExportOps.OutPath(a, "qto", "csv");
             var sb = new StringBuilder();
             sb.Append(string.Join(",", Header(level, by).Skip(1))).Append("\r\n");
