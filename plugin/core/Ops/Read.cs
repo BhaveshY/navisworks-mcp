@@ -60,8 +60,8 @@ namespace NavisworksMcp
         {
             var dot = col.IndexOf('.');
             if (dot < 0) { var s = Column(doc, item, col); return (s, s); }
-            var v = item.PropertyCategories.FindPropertyByDisplayName(col.Substring(0, dot), col.Substring(dot + 1))?.Value;
-            return (Units.Key(v), Units.Value(doc, v));
+            var v = item.PropertyCategories.FindPropertyByDisplayName(col.Substring(0, dot), col.Substring(dot + 1));
+            return (Units.Key(v?.Value), Units.Value(doc, v, item, col.Substring(0, dot)));
         }
 
         /// Counts per exact key, most frequent first. Labels that two keys share get the exact value appended.
@@ -85,7 +85,7 @@ namespace NavisworksMcp
             }
             var dot = col.IndexOf('.');
             if (dot < 0) throw new NwError("bad_args", $"column \"{col}\" is not Tab.Prop, bbox, path, hidden, color or transparency", "write columns as Tab.Prop, e.g. Element.Category");
-            return Units.Value(doc, item.PropertyCategories.FindPropertyByDisplayName(col.Substring(0, dot), col.Substring(dot + 1))?.Value);
+            return Units.Value(doc, item.PropertyCategories.FindPropertyByDisplayName(col.Substring(0, dot), col.Substring(dot + 1)), item, col.Substring(0, dot));
         }
 
         static void Items(Ctx c, Args a, Out o)
@@ -140,7 +140,7 @@ namespace NavisworksMcp
                 foreach (var cat in item.PropertyCategories)
                 {
                     if (tabs.Count > 0 && !tabs.Contains(cat.DisplayName)) continue;
-                    o.Line($"[{cat.DisplayName}] " + string.Join(" · ", cat.Properties.Select(p => p.DisplayName + "=" + Units.Value(c.Doc, p.Value))));
+                    o.Line($"[{cat.DisplayName}] " + string.Join(" · ", cat.Properties.Select(p => p.DisplayName + "=" + Units.Value(c.Doc, p, item, cat.DisplayName))));
                 }
             }
             if (a.Int("limit") > 0 && items.Count > end) o.Line(a.Next((int)end));
@@ -208,7 +208,7 @@ namespace NavisworksMcp
                     search.SearchConditions.Add(SearchCondition.HasPropertyByDisplayName(tab, name));
                     items = search.FindAll(c.Doc, false);
                 }
-                top = Tally(items.Select(item => item.PropertyCategories.FindPropertyByDisplayName(tab, name)).Where(p => p != null).Select(p => (Units.Key(p.Value), Units.Value(c.Doc, p.Value))));
+                top = Tally(items.Select(item => (p: item.PropertyCategories.FindPropertyByDisplayName(tab, name), item)).Where(x => x.p != null).Select(x => (Units.Key(x.p.Value), Units.Value(c.Doc, x.p, x.item, tab))));
                 if (cache) c.Host.Reads.Tallies[cacheKey] = top;
             }
             o.Line($"values {prop}: {top.Count:#,0} distinct in {top.Sum(g => g.count):#,0} items (exact)");

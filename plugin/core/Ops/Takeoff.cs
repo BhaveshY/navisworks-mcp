@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Autodesk.Navisworks.Api;
 using Autodesk.Navisworks.Api.Data;
@@ -16,8 +17,11 @@ namespace NavisworksMcp
     {
         public string Level, By, Kind, Path, Model, Wbs;
         public long Id;
+        public long Identity, Parent;
+        public Guid ModelGuid;
         public int Takeoffs;
         public double? Count, Length, Area, Volume;
+        public string RawLength, RawArea, RawVolume;
     }
 
     /// Quantification. The takeoff database is SQLite behind doc.GetTakeoff(); catalog groups and items are
@@ -44,6 +48,31 @@ namespace NavisworksMcp
 
         static DocumentTakeoff Tk(Ctx c) => c.Doc.GetTakeoff();
 
+        // SQLite IDs are reused. Observe native database changes (including scripts and undo),
+        // so even deleting and recreating the same item cannot give an old handle new authority.
+        sealed class Identities
+        {
+            readonly Dictionary<long, long> tokens = new Dictionary<long, long>();
+            long sequence;
+            public Identities(DocumentTakeoff tk)
+            {
+                tk.Database.Changed += (sender, e) =>
+                {
+                    if (e.Action == DatabaseChangedAction.Reset) tokens.Clear();
+                    else foreach (var change in e.Changes)
+                        if (change.TableName == "TK_Object") tokens.Remove(change.RowId);
+                };
+                tk.Database.Unloading += (sender, e) => tokens.Clear();
+            }
+            public long Token(long id)
+            {
+                if (!tokens.TryGetValue(id, out var token)) tokens[id] = token = ++sequence;
+                return token;
+            }
+        }
+        static readonly ConditionalWeakTable<DocumentTakeoff, Identities> identities = new ConditionalWeakTable<DocumentTakeoff, Identities>();
+        static Identities Identity(DocumentTakeoff tk) => identities.GetValue(tk, x => new Identities(x));
+
         static bool IsSetUp(DocumentTakeoff tk) => DocumentTakeoffExtensions.GetHasSetUp(tk);
 
         static readonly (string name, TakeoffUnitGroup group, TakeoffUnits unit)[] Quantities =
@@ -68,8 +97,8 @@ namespace NavisworksMcp
             if (!cm.LoadTemplateConfigFile(out var err))
                 throw new NwError("failed", "the Quantification template did not load: " + err, "run Project Setup once in the Quantification window, then repeat");
             cm.UnitsSystem = TakeoffUnitSystem.Metric;
-            for (var i = 0; i < Quantities.Length; i++) cm.AddTakeoffProperty("Model" + Quantities[i].name, true, Quantities[i].group, Quantities[i].unit);
-            for (var i = 0; i < Quantities.Length; i++) cm.AddTakeoffPropertyRelatedCalculationColumn("Model" + Quantities[i].name, true, Quantities[i].group, Quantities[i].unit, i);
+            for (var i = 0; i < Quantities.Length; i++) cm.AddTakeoffProperty("Model" + Quantities[i].name, false, Quantities[i].group, Quantities[i].unit);
+            for (var i = 0; i < Quantities.Length; i++) cm.AddTakeoffPropertyRelatedCalculationColumn("Model" + Quantities[i].name, false, Quantities[i].group, Quantities[i].unit, i);
             if (!cm.CreateSchema(out err))
                 throw new NwError("failed", "the Quantification database could not be created: " + err, "run Project Setup once in the Quantification window, then repeat");
             DocumentTakeoffExtensions.SetHasSetUp(tk, true);
@@ -157,6 +186,8 @@ namespace NavisworksMcp
                 case TakeoffUnits.Centimeter: return 0.01;
                 case TakeoffUnits.Millimeter: return 0.001;
                 case TakeoffUnits.Micrometer: return 1e-6;
+                case TakeoffUnits.Mil: return 0.0000254;
+                case TakeoffUnits.MicroInch: return 0.0000000254;
                 case TakeoffUnits.Inch: return 0.0254;
                 case TakeoffUnits.Feet: return 0.3048;
                 case TakeoffUnits.Yard: return 0.9144;
@@ -164,6 +195,9 @@ namespace NavisworksMcp
                 case TakeoffUnits.SquareKilometer: return 1e6;
                 case TakeoffUnits.SquareCentimeter: return 1e-4;
                 case TakeoffUnits.SquareMillimeter: return 1e-6;
+                case TakeoffUnits.SquareMicrometer: return 1e-12;
+                case TakeoffUnits.SquareMil: return Math.Pow(0.0000254, 2);
+                case TakeoffUnits.SquareMicroInch: return Math.Pow(0.0000000254, 2);
                 case TakeoffUnits.SquareInch: return 0.0254 * 0.0254;
                 case TakeoffUnits.SquareFeet: return 0.3048 * 0.3048;
                 case TakeoffUnits.SquareYard: return 0.9144 * 0.9144;
@@ -171,29 +205,51 @@ namespace NavisworksMcp
                 case TakeoffUnits.CubicCentimeter: return 1e-6;
                 case TakeoffUnits.CubicMillimeter: return 1e-9;
                 case TakeoffUnits.CubicKilometer: return 1e9;
+                case TakeoffUnits.CubicMile: return Math.Pow(1609.344, 3);
+                case TakeoffUnits.CubicMicrometer: return 1e-18;
+                case TakeoffUnits.CubicMil: return Math.Pow(0.0000254, 3);
+                case TakeoffUnits.CubicMicroInch: return Math.Pow(0.0000000254, 3);
                 case TakeoffUnits.CubicInch: return Math.Pow(0.0254, 3);
                 case TakeoffUnits.CubicFeet: return Math.Pow(0.3048, 3);
                 case TakeoffUnits.CubicYard: return Math.Pow(0.9144, 3);
                 case TakeoffUnits.Gallon: return 0.003785411784;
-                default: return 1;
+                case TakeoffUnits.Meter: case TakeoffUnits.SquareMeter: case TakeoffUnits.CubicMeter: return 1;
+                default: return double.NaN;
             }
         }
 
         /// Count, length (m), area (m2), volume (m3) of one row of a takeoff table, through the API so units convert.
         static void Fill(TakeoffTable table, long id, QtoRow row)
         {
-            foreach (var v in table.SelectVariables(id))
+            var variables = table.SelectVariables(id);
+            foreach (var name in new[] { "Count", "Length", "Area", "Volume" })
             {
+                var index = variables.Find(name);
+                if (index < 0) continue;
+                var v = variables.GetItem(index);
                 var value = v.ActiveValue;
                 if (value == null || value.IsNone) continue;
                 var x = value.IsDouble ? value.ToDouble() : value.IsInt32 ? value.ToInt32() : double.NaN;
                 if (double.IsNaN(x)) continue;
-                switch (v.Definition.Name)
+                var unit = v.ActiveUnits;
+                // Old variable-unit catalogs can have a direct ModelArea/ModelVolume formula
+                // with no calculation unit. Only that exact formula can inherit an input unit.
+                var inputIndex = unit == TakeoffUnits.Unspecified ? variables.Find("Model" + name) : -1;
+                if (inputIndex >= 0 && v.IsAbleToGetFormula)
+                {
+                    var input = variables.GetItem(inputIndex);
+                    var formula = (v.ActiveFormula ?? "").Trim().TrimStart('=').Trim().Trim('[', ']');
+                    if (formula == input.Definition.Name) unit = input.ActiveUnits;
+                }
+                var scale = Si(unit);
+                var raw = double.IsNaN(scale) && x != 0 ? Out.Num(x) + " " + unit : null;
+                double? quantity = raw == null ? x == 0 ? 0 : x * scale : (double?)null;
+                switch (name)
                 {
                     case "Count": row.Count = x; break;
-                    case "Length": row.Length = x * Si(v.ActiveUnits); break;
-                    case "Area": row.Area = x * Si(v.ActiveUnits); break;
-                    case "Volume": row.Volume = x * Si(v.ActiveUnits); break;
+                    case "Length": row.Length = quantity; row.RawLength = raw; break;
+                    case "Area": row.Area = quantity; row.RawArea = raw; break;
+                    case "Volume": row.Volume = quantity; row.RawVolume = raw; break;
                 }
             }
         }
@@ -206,10 +262,12 @@ namespace NavisworksMcp
             // NULL ModelItemID denotes a virtual/unlinked takeoff, not the first GUID-less model node.
             want = new HashSet<Guid>(want.Where(g => g != Guid.Empty));
             if (want.Count == 0) return found;
-            foreach (var x in doc.Models.RootItemDescendantsAndSelf)
+            foreach (var guid in want)
             {
-                if (want.Contains(x.InstanceGuid) && !found.ContainsKey(x.InstanceGuid)) found[x.InstanceGuid] = x;
-                if (found.Count == want.Count) break;
+                // Native GUID filtering uses Navisworks' link lookup; do not construct a managed
+                // ModelItem wrapper for every node just to resolve a few takeoff references.
+                var x = doc.Models.RootItemDescendantsAndSelf.WhereInstanceGuid(guid).FirstOrDefault();
+                if (x != null) found[guid] = x;
             }
             return found;
         }
@@ -252,13 +310,23 @@ namespace NavisworksMcp
                 {
                     var row = new QtoRow { Level = level, By = "item", Id = n.Id, Path = n.Path, Takeoffs = objects.Count(t => t.Item == n.Id) };
                     Fill(tk.Items, n.Id, row);
+                    // A rollup with no unit cannot normalize mixed-unit children itself.
+                    // Sum already-normalized object quantities rather than label the raw rollup SI.
+                    if (row.RawLength != null || row.RawArea != null || row.RawVolume != null)
+                    {
+                        var children = objects.Where(t => t.Item == n.Id).Select(t => { var r = new QtoRow(); Fill(tk.Objects, t.Id, r); return r; }).ToList();
+                        if (row.RawLength != null) { row.Length = Sum(children.Select(r => r.Length)); row.RawLength = Unknown(children.Select(r => r.RawLength)); }
+                        if (row.RawArea != null) { row.Area = Sum(children.Select(r => r.Area)); row.RawArea = Unknown(children.Select(r => r.RawArea)); }
+                        if (row.RawVolume != null) { row.Volume = Sum(children.Select(r => r.Volume)); row.RawVolume = Unknown(children.Select(r => r.RawVolume)); }
+                    }
                     return row;
                 }).ToList();
-            var needModel = level == "takeoffs" || by != "group";
+            var needModel = level == "totals" && by != "group";
             var models = needModel ? ByGuid(c.Doc, new HashSet<Guid>(objects.Select(t => t.Guid))) : new Dictionary<Guid, ModelItem>();
             var rows = objects.Select(t =>
             {
-                var row = new QtoRow { Level = "takeoffs", Id = t.Id, Path = items[t.Item].Path, Model = models.TryGetValue(t.Guid, out var mi) ? mi.DisplayName : "-", Takeoffs = 1 };
+                models.TryGetValue(t.Guid, out var mi);
+                var row = new QtoRow { Level = "takeoffs", Id = t.Id, Parent = t.Item, ModelGuid = t.Guid, Identity = Identity(tk).Token(t.Id), Path = items[t.Item].Path, Model = needModel ? mi?.DisplayName ?? "-" : null, Takeoffs = 1 };
                 Fill(tk.Objects, t.Id, row);
                 return (t, row, mi);
             }).ToList();
@@ -275,7 +343,16 @@ namespace NavisworksMcp
             {
                 Level = level, By = by, Path = g.Key.label, Takeoffs = g.Count(),
                 Count = Sum(g.Select(x => x.row.Count)), Length = Sum(g.Select(x => x.row.Length)), Area = Sum(g.Select(x => x.row.Area)), Volume = Sum(g.Select(x => x.row.Volume)),
+                RawLength = Unknown(g.Select(x => x.row.RawLength)), RawArea = Unknown(g.Select(x => x.row.RawArea)), RawVolume = Unknown(g.Select(x => x.row.RawVolume)),
             }).ToList();
+        }
+
+        static string Unknown(IEnumerable<string> values) => values.Any(x => x != null) ? "unknown (source units unresolved)" : null;
+
+        static void Names(Document doc, IEnumerable<QtoRow> rows)
+        {
+            foreach (var row in rows.Where(r => r.Level == "takeoffs" && r.Model == null))
+                row.Model = row.ModelGuid == Guid.Empty ? "-" : doc.Models.RootItemDescendantsAndSelf.WhereInstanceGuid(row.ModelGuid).FirstOrDefault()?.DisplayName ?? "-";
         }
 
         static string[] Header(string level, string by) =>
@@ -287,8 +364,8 @@ namespace NavisworksMcp
         {
             object Q(double? v, double scale = 1) => v == null ? "-" : num(v.Value * scale);
             return level == "catalog" ? new object[] { i, r.Kind, r.Path, r.Wbs, r.Takeoffs }
-                : level == "takeoffs" ? new object[] { i, r.Id, r.Path, r.Model, Q(r.Count), Q(r.Length, 1000), Q(r.Area), Q(r.Volume) }
-                : new object[] { i, r.Path, r.Takeoffs, Q(r.Count), Q(r.Length, 1000), Q(r.Area), Q(r.Volume) };
+                : level == "takeoffs" ? new object[] { i, r.Id, r.Path, r.Model, Q(r.Count), r.RawLength ?? Q(r.Length, 1000), r.RawArea ?? Q(r.Area), r.RawVolume ?? Q(r.Volume) }
+                : new object[] { i, r.Path, r.Takeoffs, Q(r.Count), r.RawLength ?? Q(r.Length, 1000), r.RawArea ?? Q(r.Area), r.RawVolume ?? Q(r.Volume) };
         }
 
         static void List(Ctx c, Args a, Out o)
@@ -320,10 +397,13 @@ namespace NavisworksMcp
             if (level != "catalog")
                 head += $" · all: count {Out.Num(Sum(rows.Select(r => r.Count)) ?? 0)}, length {Out.Num((Sum(rows.Select(r => r.Length)) ?? 0) * 1000)} mm, area {Out.Num(Sum(rows.Select(r => r.Area)) ?? 0)} m2, volume {Out.Num(Sum(rows.Select(r => r.Volume)) ?? 0)} m3";
             o.Line(head);
+            if (rows.Any(r => r.RawLength != null || r.RawArea != null || r.RawVolume != null))
+                o.Line("Quantities with unresolved units retain their source unit; metric sums exclude them. Inspect takeoffs for original values.");
             if (rows.Count == 0) return;
             var limit = a.Int("limit");
             var page = a.Int("page");
             var start = Out.Start(page, limit, a.Int("offset"));
+            Names(c.Doc, rows.Skip(start).Take(limit));
             o.Table(Header(level, by), rows.Skip(start).Take(limit).Select((r, i) => Cells(r, start + i, level, Out.Num)));
             o.More("qto", h, page, limit, start: start, total: rows.Count);
         }
@@ -421,8 +501,15 @@ namespace NavisworksMcp
             foreach (var v in vars)
             {
                 if (!values.TryGetValue(v.Definition.Name, out var x) || (v.Value != null && !v.Value.IsNone)) continue;
-                v.Value = VariantData.FromDouble(x);
-                v.Units = v.UnitsGroup == TakeoffUnitGroup.Area ? TakeoffUnits.SquareMeter : v.UnitsGroup == TakeoffUnitGroup.Volume ? TakeoffUnits.CubicMeter : TakeoffUnits.Meter;
+                var unit = v.Definition.HasFixedUnits ? v.Definition.FixedUnits : v.ActiveUnits;
+                if (v.IsAbleToSetUnits)
+                {
+                    unit = v.UnitsGroup == TakeoffUnitGroup.Area ? TakeoffUnits.SquareMeter : v.UnitsGroup == TakeoffUnitGroup.Volume ? TakeoffUnits.CubicMeter : TakeoffUnits.Meter;
+                    v.Units = unit;
+                }
+                var scale = Si(unit);
+                if (double.IsNaN(scale)) throw new NwError("unsupported_units", $"{v.Definition.Name} has no convertible length, area or volume unit ({unit})", "assign a physical unit to that variable in Quantification Project Setup");
+                v.Value = VariantData.FromDouble(x / scale);
             }
         }
 
@@ -458,7 +545,8 @@ namespace NavisworksMcp
                     }
                     tr.Commit();
                 }
-                var rows = made.Select(id => { var r = new QtoRow { Level = "takeoffs", Id = id, Path = path }; Fill(tk.Objects, id, r); return (object)r; }).ToList();
+                var taken = Takeoffs(tk).ToDictionary(t => t.Id);
+                var rows = made.Select(id => { var r = new QtoRow { Level = "takeoffs", Id = id, Parent = item.Id, ModelGuid = taken[id].Guid, Identity = Identity(tk).Token(id), Path = path }; Fill(tk.Objects, id, r); return (object)r; }).ToList();
                 var h = c.Keep(new Handle { Kind = Kind.Takeoff, Rows = rows, Label = "qto.takeoff" });
                 var text = $"took off {made.Count:#,0} items into \"{path}\" -> {h.Name}; {modelValues:#,0} had quantities from model properties";
                 if (skipped > 0) text += $"; {skipped:#,0} were already in it";
@@ -475,6 +563,7 @@ namespace NavisworksMcp
             if (a.Has("name") == a.Has("takeoffs")) throw new NwError("bad_args", "qto.delete needs name or takeoffs, not both", "pass name:\"Group/Item\" or takeoffs:\"r5#0-3\"");
             if (!IsSetUp(tk)) throw new NwError("not_found", "Quantification is not set up in this document", "nothing to delete");
             List<long> objects, items, groups;
+            List<QtoRow> selected = null;
             string what;
             if (a.Has("takeoffs"))
             {
@@ -482,6 +571,8 @@ namespace NavisworksMcp
                 var rows = t.Rows(c).Select(r => r as QtoRow).ToList();
                 if (rows.Any(r => r == null || r.Level != "takeoffs")) throw new NwError("bad_args", $"{t.Text} does not hold takeoff rows", "pass a handle from read {what:\"qto\", level:\"takeoffs\"} or from qto.takeoff");
                 objects = rows.Select(r => r.Id).Distinct().ToList();
+                selected = rows;
+                VerifyIdentity(tk, selected);
                 items = new List<long>();
                 groups = new List<long>();
                 what = $"{objects.Count:#,0} takeoffs";
@@ -498,6 +589,8 @@ namespace NavisworksMcp
             }
             return new Step("delete " + what, () =>
             {
+                // Recheck immediately before mutation as well as while planning the operation.
+                if (selected != null) VerifyIdentity(tk, selected);
                 string In(List<long> ids) => "(" + string.Join(",", ids.Select(i => i.ToString(CultureInfo.InvariantCulture))) + ")";
                 using (var tr = tk.Database.BeginTransaction(DatabaseChangedAction.Edited))
                 {
@@ -520,6 +613,14 @@ namespace NavisworksMcp
             });
         }
 
+        static void VerifyIdentity(DocumentTakeoff tk, List<QtoRow> rows)
+        {
+            var current = Takeoffs(tk).ToDictionary(t => t.Id);
+            var identity = Identity(tk);
+            if (rows.Any(r => r.Identity != identity.Token(r.Id) || !current.TryGetValue(r.Id, out var t) || t.Item != r.Parent || t.Guid != r.ModelGuid))
+                throw new NwError("stale_handle", "the selected takeoffs changed or were deleted since this handle was made", "read {what:\"qto\", level:\"takeoffs\"} and use the new handle");
+        }
+
         /// Six significant digits: the database stores single-precision floats, so more digits are noise.
         static string Sig(double x) => x == 0 ? "0" : Math.Round(x, Math.Max(0, Math.Min(15, 5 - (int)Math.Floor(Math.Log10(Math.Abs(x)))))).ToString(CultureInfo.InvariantCulture);
 
@@ -535,6 +636,7 @@ namespace NavisworksMcp
             var by = a.Str("by");
             if (!IsSetUp(Tk(c))) throw new NwError("not_found", "Quantification is not set up in this document", "take off items first with qto.item.add and qto.takeoff");
             var rows = Rows(c, level, by, null);
+            Names(c.Doc, rows);
             var path = ExportOps.OutPath(a, "qto", "csv");
             var sb = new StringBuilder();
             sb.Append(string.Join(",", Header(level, by).Skip(1))).Append("\r\n");
