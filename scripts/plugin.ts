@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
 import { join, resolve } from 'node:path';
 
 /// Every supported Navisworks Manage, oldest first. `api` is the major version of Autodesk.Navisworks.Api, which also names the bundle series and the registry key.
-const versions = [
+export const versions = [
 	{ year: 2024, api: 21 },
 	{ year: 2027, api: 24 },
 ] as const;
@@ -12,9 +12,12 @@ const versions = [
 export type Navisworks = (typeof versions)[number] & { dir: string; out: string; coreDll: string };
 
 const frameworkDir = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319';
-const root = resolve(import.meta.dirname, '..');
+export const root = resolve(import.meta.dirname, '..');
+export const version: string = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+export const binaries = ['NavisworksMcp.dll', 'NavisworksMcp.Core.dll', 'Newtonsoft.Json.dll'] as const;
+export const tar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
 const newtonsoft = join(root, 'plugin', 'lib', 'Newtonsoft.Json.dll');
-const bundleDir = join(process.env.APPDATA!, 'Autodesk', 'ApplicationPlugins', 'NavisworksMcp.bundle');
+export const bundleDir = join(process.env.APPDATA ?? '', 'Autodesk', 'ApplicationPlugins', 'NavisworksMcp.bundle');
 
 export const installed: Navisworks[] = versions
 	.map((v) => {
@@ -41,7 +44,7 @@ const navisworksRefs = [
 	'Autodesk.Navisworks.Interop.ComApi',
 ];
 
-function findCsc() {
+export function findCsc() {
 	if (process.env.CSC) return process.env.CSC;
 	const vswhere = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe';
 	const install = execFileSync(vswhere, ['-latest', '-products', '*', '-property', 'installationPath'], { encoding: 'utf8' }).trim();
@@ -55,7 +58,7 @@ const sourcesIn = (dir: string) => readdirSync(dir, { recursive: true, encoding:
 function compile(out: string, sources: string[], refs: string[]) {
 	try {
 		execFileSync(findCsc(), [
-			'-nologo', '-target:library', '-optimize+', '-debug:portable', '-langversion:latest', '-warnaserror+', '-nostdlib',
+			'-nologo', '-target:library', '-optimize+', '-debug:portable', '-deterministic', '-langversion:latest', '-warnaserror+', '-nostdlib',
 			`-out:${out}`,
 			...frameworkRefs.map((r) => `-r:${join(frameworkDir, `${r}.dll`)}`),
 			...refs.map((r) => `-r:${r}`),
@@ -77,17 +80,23 @@ export function build(nw: Navisworks) {
 
 /// Installs one bundle with a component per installed Navisworks, each built against its own API, and removes everything else in it.
 /// The shim gets a content-hashed file name, so installing over a running Navisworks never hits a locked file.
-export function install() {
+export function install(directories: ReadonlyMap<number, string>) {
+	// Validate all sources before changing an existing bundle.
+	for (const nw of installed) for (const dll of binaries) {
+		const dir = directories.get(nw.year);
+		if (!dir || !existsSync(join(dir, dll))) throw new Error(`missing ${nw.year}/${dll}`);
+	}
+	if (!installed.length) throw new Error('no supported Navisworks Manage installed');
 	const contents = join(bundleDir, 'Contents');
 	const keep = new Set<string>();
 	const components = installed.map((nw) => {
-		build(nw);
+		const source = directories.get(nw.year)!;
 		const dir = join(contents, String(nw.year));
-		const shimDll = join(nw.out, 'NavisworksMcp.dll');
+		const shimDll = join(source, 'NavisworksMcp.dll');
 		const shim = `NavisworksMcp.${createHash('sha256').update(readFileSync(shimDll)).digest('hex').slice(0, 12)}.dll`;
 		mkdirSync(dir, { recursive: true });
 		if (!existsSync(join(dir, shim))) copyFileSync(shimDll, join(dir, shim));
-		for (const dll of ['NavisworksMcp.Core.dll', 'Newtonsoft.Json.dll']) copyFileSync(join(nw.out, dll), join(dir, dll));
+		for (const dll of ['NavisworksMcp.Core.dll', 'Newtonsoft.Json.dll']) copyFileSync(join(source, dll), join(dir, dll));
 		for (const file of [dir, ...[shim, 'NavisworksMcp.Core.dll', 'Newtonsoft.Json.dll'].map((f) => join(dir, f))]) keep.add(file);
 		return `  <Components Description="Navisworks Manage ${nw.year}">
     <RuntimeRequirements OS="Win64" Platform="NAVMAN" SeriesMin="Nw${nw.api}" SeriesMax="Nw${nw.api}" />
@@ -96,7 +105,7 @@ export function install() {
 `;
 	});
 	writeFileSync(join(bundleDir, 'PackageContents.xml'), `<?xml version="1.0" encoding="utf-8"?>
-<ApplicationPackage SchemaVersion="1.0" AutodeskProduct="Navisworks" ProductType="Application" Name="NavisworksMcp" AppVersion="1.0.0" Author="navisworks-mcp">
+<ApplicationPackage SchemaVersion="1.0" AutodeskProduct="Navisworks" ProductType="Application" Name="NavisworksMcp" AppVersion="${version}" Author="navisworks-mcp">
 ${components.join('')}</ApplicationPackage>
 `);
 	for (const entry of readdirSync(contents, { recursive: true, encoding: 'utf8' }).sort().reverse()) {
@@ -109,6 +118,20 @@ ${components.join('')}</ApplicationPackage>
 		}
 	}
 	return bundleDir;
+}
+
+function release() {
+	const missing = versions.filter((v) => !installed.some((nw) => nw.year === v.year));
+	if (missing.length) throw new Error(`release needs Navisworks Manage ${missing.map((v) => v.year).join(', ')} installed`);
+	for (const nw of installed) build(nw);
+	const dist = join(root, 'dist');
+	mkdirSync(dist, { recursive: true });
+	const name = `navisworks-mcp-plugin-${version}.zip`;
+	const zip = join(dist, name);
+	execFileSync(tar, ['-a', '-cf', zip, '-C', join(root, 'build'), ...installed.flatMap((nw) => binaries.map((dll) => `${nw.year}/${dll}`))]);
+	writeFileSync(`${zip}.sha256`, `${createHash('sha256').update(readFileSync(zip)).digest('hex')}  ${name}\n`);
+	console.log(`created ${zip}`);
+	console.log(`gh release create v${version} dist/${name} dist/${name}.sha256 --repo BhaveshY/navisworks-mcp --title v${version} --generate-notes`);
 }
 
 /// Runs the e2e files against each version in turn, building each first. Every version runs even after one fails.
@@ -142,7 +165,11 @@ if (import.meta.main) {
 			build(nw);
 			console.log(`built ${nw.out}`);
 		}
-	} else if (command === 'install') console.log(`installed ${install()}`);
+	} else if (command === 'install') {
+		for (const nw of installed) build(nw);
+		console.log(`installed ${install(new Map(installed.map((nw) => [nw.year, nw.out])))}`);
+	}
+	else if (command === 'release') release();
 	else if (command === 'test') process.exitCode = test(args);
-	else throw new Error('usage: node scripts/plugin.ts build [year...] | install | test [year...] [file...]');
+	else throw new Error('usage: node scripts/plugin.ts build [year...] | install | release | test [year...] [file...]');
 }
