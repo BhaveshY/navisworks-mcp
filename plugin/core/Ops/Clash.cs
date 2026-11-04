@@ -21,13 +21,13 @@ namespace NavisworksMcp
         {
             Catalog.Read("read", "tests", "", ListTests, "clash tests: type, tolerance, status, last run, result counts by status, native groups, selections", "{}"),
             Catalog.Read("read", "clashes", "; test:str in:target where:where status:strs group:str limit:int=50 page:int=1 offset:int=0", Clashes,
-                "results of a clash test -> r# (as an items target it means both items of each result). where keeps results where either item matches; group counts by " + Keys,
+                "results of a clash test -> r# (as an items target it means both items of each result). Includes comment count and latest comment (512 chars; reports include all). level uses grid elevation, then item1/item2 Reference Level, Level or Base Constraint; level_source identifies the source. Item reference levels are not clash elevations. where keeps results where either item matches; group counts by " + Keys,
                 "{test:\"Ducts vs Walls\", status:\"new,active\", group:\"level\"}"),
             Catalog.Apply("clash.add", "name:str a:target b:target; " + Types + "=hard tol:len=0 self:bool=false rules:strs", Add,
-                "add a clash test. A set stays live as a set reference; a where (?.. or a where-handle) is saved as search set \"Clash/<name> A|B\" and referenced; other targets are fixed items. rules: built-in display names, e.g. Items in same file or Items in same composite object; omitted means none",
+                "add a clash test. tol is non-negative mm (clearance requires > 0). A set stays live as a set reference; a where (?.. or a where-handle) is saved as search set \"Clash/<name> A|B\" and referenced; other targets are fixed items. rules: built-in display names, e.g. Items in same file or Items in same composite object; omitted means none",
                 "{name:\"Ducts vs Walls\", a:\"set:MEP/Ducts\", b:\"?Item.Type = IfcWall\", type:\"clearance\", tol:25}"),
             Catalog.Apply("clash.update", "test:str; a:target b:target " + Types + " tol:len self:bool to:str rules:strs", Update,
-                "change a test's selections, type, tolerance, self-intersect, built-in rules or name (to); rules replaces the rule list, [] clears it, omission preserves it. Results stay until the next run",
+                "change a test's selections, type, tolerance (non-negative mm; clearance > 0), self-intersect, built-in rules or name (to); rules replaces the rule list, [] clears it, omission preserves it. Results stay until the next run",
                 "{test:\"Ducts vs Walls\", tol:50, to:\"Ducts vs Walls 50\"}"),
             Catalog.Apply("clash.delete", "test:str", Delete, "delete a clash test and its results", "{test:\"Ducts vs Walls\"}"),
             Catalog.Apply("clash.run", "test:str", Run, "run one test, or every test with test:\"all\"; a long run returns a job j#", "{test:\"Ducts vs Walls\"}"),
@@ -94,14 +94,33 @@ namespace NavisworksMcp
             new[] { r.Selection1, r.Selection2, r.CompositeItemSelection1, r.CompositeItemSelection2 }.Where(x => x != null).SelectMany(x => x);
 
         /// Grid intersection and level of a result centre from the active grid system. Without grid lines the level is the highest one at or below the centre.
-        static (string grid, string level) Location(Ctx c, ClashResult r)
+        static (string grid, string level, string source) Location(Ctx c, ClashResult r)
         {
             var sys = c.Doc.Grids.ActiveSystem;
-            if (sys == null || r.Center == null) return (null, null);
-            var at = sys.ClosestIntersection(r.Center);
-            if (at != null) return (at.DisplayName, at.Level?.DisplayName);
-            var level = sys.Levels.Where(l => l.Elevation <= r.Center.Z + Units.FromMm(c.Doc, 1)).OrderByDescending(l => l.Elevation).FirstOrDefault();
-            return (null, level?.DisplayName);
+            string grid = null;
+            if (sys != null && r.Center != null)
+            {
+                var at = sys.ClosestIntersection(r.Center);
+                grid = at?.DisplayName;
+                var level = at?.Level ?? sys.Levels.Where(l => l.Elevation <= r.Center.Z + Units.FromMm(c.Doc, 1)).OrderByDescending(l => l.Elevation).FirstOrDefault();
+                if (level != null) return (grid, level.DisplayName, "grid elevation");
+            }
+            // These are authoring reference levels, not an inferred physical clash elevation.
+            for (var side = 1; side <= 2; side++)
+            {
+                var item = Item(r, side);
+                if (item == null) continue;
+                foreach (var parent in item.AncestorsAndSelf)
+                    foreach (var key in new[] { "Element.Reference Level", "Element.Level", "Element.Base Constraint", "Level.Name" })
+                    {
+                        var split = key.IndexOf('.');
+                        var prop = parent.PropertyCategories.FindPropertyByDisplayName(key.Substring(0, split), key.Substring(split + 1));
+                        if (prop == null) continue;
+                        var value = Units.Value(c.Doc, prop.Value);
+                        if (!string.IsNullOrWhiteSpace(value) && value != "-") return (grid, value, $"item{side}.{key}");
+                    }
+            }
+            return (grid, null, null);
         }
 
         static readonly Regex ItemKey = new Regex(@"^item([12])\.(.+\..+)$");
@@ -128,19 +147,27 @@ namespace NavisworksMcp
             return value == "-" ? null : value;
         }
 
-        static readonly string[] Header = { "clash", "status", "dist", "item1", "id1", "item2", "id2", "level", "grid", "assigned", "centre", "group" };
+        static readonly string[] Header = { "clash", "status", "dist", "item1", "id1", "item2", "id2", "level", "grid", "assigned", "centre", "group", "level_source", "comments", "comment" };
 
-        static object[] Cells(Ctx c, ClashResult r)
+        static object[] Cells(Ctx c, ClashResult r, bool report = false)
         {
-            var (grid, level) = Location(c, r);
+            var (grid, level, source) = Location(c, r);
             var a = Item(r, 1);
             var b = Item(r, 2);
             return new object[]
             {
                 r.DisplayName, Name(r.Status), Units.ToMm(c.Doc, r.Distance), a?.DisplayName, a == null ? null : ReadOps.Id(c.Doc, a),
                 b?.DisplayName, b == null ? null : ReadOps.Id(c.Doc, b), level, grid, Compat.AssignedTo(r), r.Center == null ? null : Units.Point(c.Doc, r.Center),
-                (r.Parent as ClashResultGroup)?.DisplayName,
+                (r.Parent as ClashResultGroup)?.DisplayName, source, r.Comments.Count, Comments(r, report),
             };
+        }
+
+        static string Comments(ClashResult r, bool all)
+        {
+            var comments = r.Comments.OrderBy(x => x.CreationDate).ToList();
+            if (!all) comments = comments.Skip(Math.Max(0, comments.Count - 1)).ToList();
+            var text = string.Join("; ", comments.Select(x => $"{x.CreationDate:yyyy-MM-dd HH:mm} {Compat.CommentAuthor(x)}: {x.Body}"));
+            return !all && text.Length > 512 ? text.Substring(0, 509) + "..." : text;
         }
 
         static string Counts(IEnumerable<ClashResult> results)
@@ -304,6 +331,8 @@ namespace NavisworksMcp
 
         static void CheckTolerance(ClashTest t)
         {
+            if (t.Tolerance < 0 || double.IsNaN(t.Tolerance) || double.IsInfinity(t.Tolerance))
+                throw new NwError("bad_args", "tol must be finite and non-negative (>= 0)", "pass a non-negative tolerance in mm, e.g. tol:0 for hard clashes or tol:25 for clearance");
             if (t.TestType == ClashTestType.Clearance && t.Tolerance <= 0)
                 throw new NwError("bad_args", "a clearance test needs tol > 0", "pass tol in mm, e.g. tol:25");
         }
@@ -512,21 +541,21 @@ namespace NavisworksMcp
             if (a.Bool("images") && results.Count > 0)
             {
                 var dir = Path.Combine(Path.GetDirectoryName(path), Path.GetFileNameWithoutExtension(path) + "_images");
-                Directory.CreateDirectory(dir);
+                // Validate every image destination before rendering any; a locked old image must not leave half a report.
+                for (var i = 0; i < results.Count; i++) images[i] = ExportOps.ValidatePath(Path.Combine(dir, $"{i + 1:000}-{Safe(results[i].DisplayName)}.png"), "png");
                 for (var i = 0; i < results.Count; i++)
                 {
                     c.CheckCancelled();
                     using (var bmp = Data(c).TestsImageForResult(results[i], ImageGenerationStyle.Scene, 480, 360))
                     {
-                        if (bmp == null) continue;
-                        images[i] = Path.Combine(dir, $"{i + 1:000}-{Safe(results[i].DisplayName)}.png");
-                        bmp.Save(images[i], System.Drawing.Imaging.ImageFormat.Png);
+                        if (bmp == null) { images[i] = null; continue; }
+                        ExportOps.Write(images[i], temp => bmp.Save(temp, System.Drawing.Imaging.ImageFormat.Png));
                     }
                 }
             }
-            var rows = results.Select(r => Cells(c, r).Select(Out.Cell).ToArray()).ToList();
+            var rows = results.Select(r => Cells(c, r, true).Select(Out.Cell).ToArray()).ToList();
             var text = html ? Html(c, test, results, rows, images, path) : Csv(rows, images, a.Bool("images"));
-            File.WriteAllText(path, text, new UTF8Encoding(true));
+            ExportOps.Write(path, temp => File.WriteAllText(temp, text, new UTF8Encoding(true)));
             o.Line($"clash_report {path} · {Counts(results)} · {images.Count(x => x != null)} images");
         }
 

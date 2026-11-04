@@ -8,6 +8,7 @@ namespace NavisworksMcp
     static class Compat
     {
         public static void PublishNwd(Document doc, string path, PublishProperties props) => doc.PublishFile(path, props);
+        public static void CopyClip(Viewpoint target, Viewpoint source) => target.InternalClipPlanes.CopyFrom(source.InternalClipPlanes);
 
         public static string Clip(Viewpoint vp)
         {
@@ -27,5 +28,6 @@ namespace NavisworksMcp
         public static void SetAssignedTo(DocumentClashTests data, IClashResult r, string name) => data.TestsEditResultAssignedTo(r, name);
 
         public static Comment Comment(Document doc, string body, CommentStatus status, string author) => doc.CreateCommentWithUniqueId(body, status, author);
+        public static string CommentAuthor(Comment comment) => comment.Author;
     }
 }

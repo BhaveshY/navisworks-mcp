@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Runtime.InteropServices;
 using Autodesk.Navisworks.Api;
 using Autodesk.Navisworks.Api.Interop;
 using Autodesk.Navisworks.Api.Timeliner;
@@ -12,6 +13,62 @@ using Newtonsoft.Json.Linq;
 
 namespace NavisworksMcp
 {
+    /// The native helper exposes GetViewType but no setter. Drive its own settings dialog
+    /// on this thread before it can activate; do not synthesize actual task dates to simulate a plan.
+    sealed class PlannedSimulation : IDisposable
+    {
+        readonly Hook callback;
+        readonly IntPtr hook;
+        bool configured;
+        delegate IntPtr Hook(int code, IntPtr window, IntPtr data);
+        [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookEx(int kind, Hook callback, IntPtr module, uint thread);
+        [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
+        [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr window, IntPtr data);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int size);
+        [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr window, int id);
+        [DllImport("user32.dll")] static extern bool CheckRadioButton(IntPtr window, int first, int last, int selected);
+        [DllImport("user32.dll")] static extern bool CheckDlgButton(IntPtr window, int id, uint check);
+        [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
+        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
+        [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+
+        PlannedSimulation()
+        {
+            callback = BeforeActivation;
+            hook = SetWindowsHookEx(5 /* WH_CBT */, callback, IntPtr.Zero, GetCurrentThreadId());
+            if (hook == IntPtr.Zero) throw Unavailable();
+        }
+        static NwError Unavailable() => new NwError("unsupported_state", "cannot select Planned simulation settings", "in TimeLiner > Simulate > Settings select Planned and disable Override Start / End Dates");
+        IntPtr BeforeActivation(int code, IntPtr window, IntPtr data)
+        {
+            if (code == 5 /* HCBT_ACTIVATE */)
+            {
+                var name = new StringBuilder(64);
+                GetClassName(window, name, name.Capacity);
+                if (name.ToString() == "#32770")
+                {
+                    // Resource ids in the 2024/2027 TimeLiner dialog; independent of UI language.
+                    bool expected = GetDlgItem(window, 23063) != IntPtr.Zero && GetDlgItem(window, 23061) != IntPtr.Zero && GetDlgItem(window, 23047) != IntPtr.Zero;
+                    configured = expected && CheckRadioButton(window, 23061, 23065, 23063) && CheckDlgButton(window, 23047, 0);
+                    ShowWindow(window, 0 /* SW_HIDE */);
+                    PostMessage(window, 0x111 /* WM_COMMAND */, new IntPtr(configured ? 1 : 2), IntPtr.Zero);
+                    return new IntPtr(1); // never take keyboard focus, even for an unexpected dialog
+                }
+                return new IntPtr(1); // DialogBox must not activate its owner when it closes, either
+            }
+            return CallNextHookEx(hook, code, window, data);
+        }
+        public static void Configure(LcTlSimulationHelper sim)
+        {
+            using (var dialog = new PlannedSimulation())
+            {
+                sim.DisplaySettingsDialog();
+                if (!dialog.configured) throw Unavailable();
+            }
+        }
+        public void Dispose() { UnhookWindowsHookEx(hook); }
+    }
+
     /// TimeLiner tasks, addressed by a handle row (r3#0) or a name path such as "Level 1/Walls".
     static class TimelinerOps
     {
@@ -554,15 +611,19 @@ namespace NavisworksMcp
             return new Step("simulate the schedule at " + Date(at), () =>
             {
                 var sim = LcTlSimulationHelper.Instance;
-                if (!sim.IsGUIActive())
-                {
-                    // The simulation helper only runs while the TimeLiner pane exists; without it SetSimulationTime is ignored.
-                    var pane = Application.Plugins.FindPlugin("TimelinerDockPane.Navisworks");
-                    if (pane != null && !pane.IsLoaded) pane.LoadPlugin();
-                    sim.SetGUIActive(true);
-                }
+                // The pane initializes the helper; legacy NWDs can retain Actual mode with no actual dates.
+                var pane = Application.Plugins.FindPlugin("TimelinerDockPane.Navisworks");
+                if (pane != null && !pane.IsLoaded) pane.LoadPlugin();
+                sim.SetGUIActive(false);
+                PlannedSimulation.Configure(sim);
+                sim.SetGUIActive(true);
                 sim.SetSimulationTime(at);
-                if (!sim.GetTimeControlsValid()) throw new NwError("failed", "the TimeLiner simulation did not start", "open the TimeLiner window in Navisworks once, then repeat");
+                if (!sim.GetTimeControlsValid() || sim.GetViewType() != LcTlSimulationHelperViewType.ePLANNED)
+                {
+                    sim.SetGUIActive(false);
+                    simulatedAt = null;
+                    throw new NwError("unsupported_state", "the model did not initialize a planned TimeLiner simulation", "open TimeLiner > Simulate > Settings and check the planned date range and task attachments");
+                }
                 var first = sim.GetStartTime();
                 var last = sim.GetEndTime();
                 var now = at < first ? first : at > last ? last : at;
@@ -592,7 +653,7 @@ namespace NavisworksMcp
                 };
                 sb.Append(string.Join(",", cells.Select(x => Csv(x == "-" ? "" : x)))).Append("\r\n");
             }
-            File.WriteAllText(path, sb.ToString(), new UTF8Encoding(true));
+            ExportOps.Write(path, temp => File.WriteAllText(temp, sb.ToString(), new UTF8Encoding(true)));
             o.Line($"tasks_csv {path} {Count(tasks.Count)}");
         }
     }
