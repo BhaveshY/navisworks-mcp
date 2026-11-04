@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { navisworks } from '../scripts/plugin.ts';
 import { startSession } from './navisworks.ts';
 
-const handle = (text: string) => /\b(r\d+)\b/.exec(text)![1]!;
+const handle = (text: string) => /\b(r[a-z0-9]+-\d+)\b/.exec(text)![1]!;
 const rows = (text: string) => text.split('\n').filter(l => /^\d+\|/.test(l)).map(l => l.split('|'));
 const number = (text: string) => Number(text.replaceAll(',', ''));
 function near(actual: string, expected: number) {

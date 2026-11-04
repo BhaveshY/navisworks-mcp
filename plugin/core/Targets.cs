@@ -31,7 +31,8 @@ namespace NavisworksMcp
         const int Capacity = 200;
         readonly Dictionary<int, Handle> table = new Dictionary<int, Handle>();
         int seq;
-        readonly string session = Convert.ToBase64String(Guid.NewGuid().ToByteArray()).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        // Five random [a-z0-9] characters: 60 million stamps keep a restarted process from reusing a handle name, in few tokens.
+        readonly string session = new string(Guid.NewGuid().ToByteArray().Take(5).Select(b => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).ToArray());
         public int Last { get; private set; }
 
         /// Bumped whenever the set of models changes (open, append, merge, close), because rows and takeoff ids
