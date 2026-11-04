@@ -93,7 +93,7 @@ namespace NavisworksMcp
             var target = a.Target("in");
             Handle h;
             if (!a.Has("where") && target?.Whole?.Kind == Kind.Items)
-                h = target.Whole;
+                { h = target.Whole; h.Fill(); }
             else
             {
                 var scope = target?.Items(c);
@@ -153,24 +153,14 @@ namespace NavisworksMcp
             if (h == null)
             {
                 var roots = a.Has("under") ? a.Items("under").SelectMany(x => x.Children).ToList() : c.Doc.Models.RootItems.ToList();
-                var rows = new List<object>();
-                var depths = new List<int>();
-                void Walk(IEnumerable<ModelItem> level, int depth)
-                {
-                    foreach (var x in level)
-                    {
-                        rows.Add(x);
-                        depths.Add(depth);
-                        if (depth + 1 < a.Int("depth")) Walk(x.Children, depth + 1);
-                    }
-                }
-                Walk(roots, 0);
-                h = c.Keep(new Handle { Kind = Kind.Items, Rows = rows, Depths = depths, Label = "tree" });
+                h = c.Keep(new Handle { Kind = Kind.Items, Rows = new List<object>(), Depths = new List<int>(), Pending = Walk(roots, 0, a.Int("depth")).GetEnumerator(), Label = "tree" });
             }
             var limit = a.Int("limit");
             var page = a.Int("page");
             var start = Out.Start(page, limit, a.Int("offset"));
-            o.Line($"{h.Name} tree nodes {h.Rows.Count:#,0}");
+            // A deep walk over a large model takes seconds, so a page walks only one row past itself.
+            h.Fill((int)Math.Min(int.MaxValue, (long)start + limit + 1));
+            o.Line(h.Pending == null ? $"{h.Name} tree nodes {h.Rows.Count:#,0}" : $"{h.Name} tree nodes {h.Rows.Count:#,0} so far; paging on walks further");
             o.Table(new[] { "#", "id", "name", "type", "children", "descendants" }, h.Rows.Skip(start).Take(limit).Cast<ModelItem>().Select((x, i) => new object[]
             {
                 start + i, Id(c.Doc, x), new string(' ', h.Depths[start + i] * 2) + x.DisplayName, x.ClassDisplayName, x.Children.Count(), Descendants(c, x),
@@ -178,10 +168,19 @@ namespace NavisworksMcp
             o.More("tree", h, page, limit, start: start);
         }
 
+        static IEnumerable<(ModelItem item, int depth)> Walk(IEnumerable<ModelItem> level, int depth, int maxDepth)
+        {
+            foreach (var x in level)
+            {
+                yield return (x, depth);
+                if (depth + 1 < maxDepth) foreach (var below in Walk(x.Children, depth + 1, maxDepth)) yield return below;
+            }
+        }
+
         static int Descendants(Ctx c, ModelItem item)
         {
             var id = Id(c.Doc, item);
-            if (!c.Host.Reads.Counts.TryGetValue(id, out var count)) c.Host.Reads.Counts[id] = count = item.Descendants.Count();
+            if (!c.Host.Reads.Counts.TryGetValue(id, out var count)) c.Host.Reads.Counts[id] = count = Count(c.Doc, item, "LcOaNode") - 1;
             return count;
         }
 

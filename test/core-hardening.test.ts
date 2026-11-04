@@ -248,3 +248,51 @@ test('F1 handles from a closed process never address new results', async () => {
  assert.match(r.text, /error stale_handle:/);
  assert.doesNotMatch(await call('read', { what: 'items', where: 'Item.Type = IfcDuctSegment', cols: 'color' }), /#ff0011/);
 });
+
+test('a deep tree pages lazily and its total and handle stay exact', async () => {
+ await call('apply', { ops: [{ op: 'open', path: nw.fixture }] });
+ const walked = Number((await call('script', { code: 'return nw.Doc.Models.RootItems.Sum(r => r.DescendantsAndSelf.Count()).ToString();' })).trim());
+ let page = await call('read', { what: 'tree', depth: 20, limit: 2 });
+ assert.match(page, /tree nodes 3 so far; paging on walks further/);
+ const tree = handle(page);
+ const seen = rows(page);
+ for (let n = 0; /^more:/m.test(page); n++) {
+  assert.ok(n < 100);
+  page = await call('read', follow(page));
+  seen.push(...rows(page));
+ }
+ assert.match(page, new RegExp(`tree nodes ${walked}$`, 'm'));
+ assert.equal(seen.length, walked);
+ assert.equal(new Set(seen.map(r => r.split('|')[1])).size, walked);
+ const fresh = await call('read', { what: 'tree', depth: 20, limit: 1 });
+ assert.equal(total(await call('read', { what: 'items', in: handle(fresh) })), walked);
+});
+
+test('missing, not has and !has all find items without a property', async () => {
+ await call('apply', { ops: [{ op: 'open', path: nw.fixture }] });
+ const expected = total(await call('read', { what: 'items', where: 'Item.Type = IfcWall and !has Pset_Fixture.System' }));
+ assert.ok(expected > 0);
+ for (const spelling of ['missing', 'not has', 'NOT HAS']) assert.equal(total(await call('read', { what: 'items', where: `Item.Type = IfcWall and ${spelling} Pset_Fixture.System` })), expected);
+ const bad = await nw.callRaw('read', { what: 'items', where: 'Item.Type IfcWall' });
+ assert.match(bad.text, /next: .*!has Tab\.Prop \(property missing\)/);
+ for (const [tool, args] of [['apply', { ops: [{ op: {} }] }], ['export', { out: [{ what: [] }] }]] as const) {
+  const r = await nw.callRaw(tool, args);
+  assert.match(r.text, new RegExp(`next: help \{tool:"${tool}"\}`));
+ }
+});
+
+test('the first page of a deep hospital tree returns in under a second', async () => {
+ const copy = join(nw.dir, 'hospital');
+ if (!(await call('status')).includes('Hospital')) {
+  cpSync(join(navisworks().dir, 'Samples', 'Quantification'), copy, { recursive: true });
+  await call('apply', { ops: [{ op: 'open', path: join(copy, 'Autodesk_Hospital_Sample.nwf') }] });
+  await call('script', { code: 'nw.Doc.SetActiveSheet("cache"); return nw.Doc.Models.Count;' });
+ }
+ const started = performance.now();
+ const first = await call('read', { what: 'tree', depth: 8, limit: 100 });
+ const ms = performance.now() - started;
+ console.log('deep hospital tree first page', navisworks().year, Math.round(ms), 'ms');
+ assert.equal(rows(first).length, 100);
+ assert.match(first, /^more: /m);
+ assert.ok(ms < 1000, `first page took ${Math.round(ms)} ms`);
+});

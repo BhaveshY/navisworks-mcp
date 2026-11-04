@@ -23,7 +23,19 @@ namespace NavisworksMcp
         public bool Descendants;
         public bool Searched;
         public List<int> Depths;
+        /// The rest of a tree walk, read only as far as a page needs; null once every row is in Rows.
+        public IEnumerator<(ModelItem item, int depth)> Pending;
         public string Name => "r" + Session + "-" + N;
+
+        public void Fill(int upTo = int.MaxValue)
+        {
+            while (Pending != null && Rows.Count < upTo)
+            {
+                if (!Pending.MoveNext()) { Pending.Dispose(); Pending = null; break; }
+                Rows.Add(Pending.Current.item);
+                Depths.Add(Pending.Current.depth);
+            }
+        }
     }
 
     sealed class Handles
@@ -129,9 +141,10 @@ namespace NavisworksMcp
             {
                 var h = c.Host.Handles.Get(m.Groups["session"].Value, m.Groups["number"].Value);
                 t.HandleKind = h.Kind;
-                if (!m.Groups["from"].Success) { t.Whole = h; return _ => h.Rows; }
+                if (!m.Groups["from"].Success) { t.Whole = h; return _ => { h.Fill(); return h.Rows; }; }
                 var from = Index(m.Groups["from"].Value);
                 var to = m.Groups["to"].Success ? Index(m.Groups["to"].Value) : from;
+                h.Fill(to + 1);
                 if (from > to || to >= h.Rows.Count) throw new NwError("bad_args", $"{s} is outside {h.Name}, which has rows 0-{h.Rows.Count - 1}", $"use rows inside 0-{h.Rows.Count - 1}");
                 return _ => h.Rows.Skip(from).Take(to - from + 1);
             }
@@ -222,7 +235,8 @@ namespace NavisworksMcp
                 throw new NwError("bad_args", "this filter supports and only", "combine task conditions with and; quote literal values containing or");
             return parts.Where((_, i) => i % 2 == 0).ToArray();
         }
-        static readonly Regex CondRx = new Regex(@"^(?<neg>!)?has\s+(?<name>.+)$|^(?<name>.+?)\s*(?<op>!=|>=|<=|~=|=|~|>|<)\s*(?<value>.*)$", RegexOptions.IgnoreCase);
+        // "!has", "not has" and "missing" all mean the property is absent; agents reach for each of them.
+        static readonly Regex CondRx = new Regex(@"^(?:(?<neg>!|not\s+)has|(?<neg>missing))\s+(?<name>.+)$|^has\s+(?<name>.+)$|^(?<name>.+?)\s*(?<op>!=|>=|<=|~=|=|~|>|<)\s*(?<value>.*)$", RegexOptions.IgnoreCase);
 
         public static Where Parse(string text)
         {
@@ -263,7 +277,7 @@ namespace NavisworksMcp
         }
 
         static NwError Bad(string piece) => new NwError("bad_args", $"cannot read condition \"{piece.Trim()}\"",
-            "write conditions as Tab.Prop op value, e.g. Item.Type = IfcWall and Pset_WallCommon.FireRating ~ 90 or has \"Element ID\".Value; ops = != ~ ~= > >= < <=");
+            "write conditions as Tab.Prop op value, has Tab.Prop or !has Tab.Prop (property missing), e.g. Item.Type = IfcWall and !has Pset_WallCommon.FireRating; ops = != ~ ~= > >= < <=");
 
         /// Runs the search natively. Values are parsed against the property's real type, found on the first item that has it.
         public ModelItemCollection Find(Ctx c, ModelItemCollection scope, bool descendants = false)
