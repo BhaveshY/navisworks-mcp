@@ -5,21 +5,41 @@ using Autodesk.Navisworks.Api;
 
 namespace NavisworksMcp
 {
+    // UI-thread cache, invalidated on model/sheet changes, transactions and unit changes.
+    sealed class ReadCache
+    {
+        public readonly Dictionary<string, string> Text = new Dictionary<string, string>();
+        public readonly Dictionary<string, int> Counts = new Dictionary<string, int>();
+        public readonly Dictionary<string, List<(string label, int count)>> Tallies = new Dictionary<string, List<(string label, int count)>>();
+        public void Clear() { Text.Clear(); Counts.Clear(); Tallies.Clear(); }
+    }
+
     static class ReadOps
     {
         public static readonly Op[] All =
         {
-            Catalog.Read("read", "items", "; where:where in:target cols:strs group:str limit:int=50 page:int=1", Items,
-                "search model items (or page a handle) -> r#. cols adds properties (Tab.Prop, or bbox, path); group counts by a property",
+            Catalog.Read("read", "items", "; where:where in:target cols:strs group:str descendants:bool=false limit:int=50 page:int=1 offset:int=0", Items,
+                "search topmost matching items (or page a handle) -> r#. descendants:true includes matching descendants. where: has Tab.Prop, !has Tab.Prop (missing, including globally absent properties), comparisons joined by and/or; JSON double quotes and backslash escapes protect literal values. cols adds properties; group shows the top 10 groups. limit:0 returns a summary without continuation",
                 "{where:\"Item.Type = IfcWall and Pset_Fixture.FireRating = F90\", cols:\"Pset_Fixture.IsExternal\"}"),
-            Catalog.Read("read", "props", "items:target; tabs:strs limit:int=3", Props,
+            Catalog.Read("read", "props", "items:target; tabs:strs limit:int=3 offset:int=0", Props,
                 "all properties of the first `limit` items, optionally only some tabs", "{items:\"r1#0\", tabs:\"Item,Element\"}"),
-            Catalog.Read("read", "tree", "; under:target depth:int=1 limit:int=100", Tree,
+            Catalog.Read("read", "tree", "; under:target in:target depth:int=1 limit:int=100 page:int=1 offset:int=0", Tree,
                 "children of a node (default: model roots) with descendant counts", "{under:\"r2#0\", depth:2}"),
-            Catalog.Read("read", "values", "prop:str; in:target where:where top:int=30", Values,
+            Catalog.Read("read", "values", "prop:str; in:target where:where top:int=30 offset:int=0", Values,
                 "distinct values of one property with counts", "{prop:\"Item.Type\"}"),
             Catalog.Read("read", "stats", "", Stats, "model totals: items, geometry items, extents, most common types", "{}"),
+            Catalog.Read("read", "page", "in:target; offset:int=0", TextPage, "continue a large text result using its more: call", "{in:\"last\", offset:1}"),
         };
+
+        static void TextPage(Ctx c, Args a, Out o)
+        {
+            var h = a.Target("in").Whole;
+            if (h == null || h.Kind != Kind.Text) throw new NwError("bad_args", "page needs an output-page handle", "copy the more: read call from the original response");
+            var i = a.Int("offset");
+            if (i >= h.Rows.Count) return;
+            o.Line((string)h.Rows[i]);
+            if (i + 1 < h.Rows.Count) o.Line($"more: read {{what:\"page\", in:\"{h.Name}\", offset:{i + 1}}}");
+        }
 
         public static IEnumerable<object[]> Rows(Ctx c, IEnumerable<object> rows, int start, string[] cols) =>
             rows.Select((row, i) =>
@@ -78,33 +98,43 @@ namespace NavisworksMcp
             {
                 var scope = target?.Items(c);
                 if (!a.Has("where") && scope == null) throw new NwError("bad_args", "items needs where, in, or both", "e.g. read {what:\"items\", where:\"Item.Type = IfcWall\"}");
-                var found = a.Has("where") ? Where.Parse(a.Str("where")).Find(c, scope) : scope;
-                h = c.Keep(new Handle { Kind = Kind.Items, Rows = found.Cast<object>().ToList(), Where = scope == null ? a.Str("where") : null, Label = a.Str("where") ?? target.Text });
+                var found = a.Has("where") ? Where.Parse(a.Str("where")).Find(c, scope, a.Bool("descendants")) : scope;
+                h = c.Keep(new Handle { Kind = Kind.Items, Rows = found.Cast<object>().ToList(), Where = scope == null ? a.Str("where") : null, Searched = a.Has("where") || (target?.Text.StartsWith("?") ?? false), Descendants = a.Has("where") && a.Bool("descendants"), Label = a.Str("where") ?? target.Text });
             }
-            Page(c, o, h, a.List("cols"), a.Int("limit"), a.Int("page"), a.Str("group"));
+            Page(c, o, h, a.List("cols"), a.Int("limit"), a.Int("page"), a.Str("group"), a.Int("offset"));
         }
 
-        public static void Page(Ctx c, Out o, Handle h, string[] cols, int limit, int page, string group = null)
+        public static void Page(Ctx c, Out o, Handle h, string[] cols, int limit, int page, string group = null, int offset = 0)
         {
             var head = $"{h.Name} items {h.Rows.Count:#,0} (exact)";
+            if (h.Searched) head += h.Descendants ? " · all matching items" : " · topmost matching items";
             if (group != null)
             {
-                var counts = Tally(h.Rows.Cast<ModelItem>().Select(x => Exact(c.Doc, x, group))).Select(g => $"{g.label} {g.count:#,0}");
-                head += $" · by {group}: " + string.Join(" · ", counts);
+                var key = "group:" + h.Name + ":" + group;
+                if (!c.Host.Reads.Tallies.TryGetValue(key, out var counts))
+                {
+                    counts = Tally(h.Rows.Cast<ModelItem>().Select(x => Exact(c.Doc, x, group)));
+                    if (c.Host.Reads.Tallies.Count >= 128) c.Host.Reads.Tallies.Clear();
+                    c.Host.Reads.Tallies[key] = counts;
+                }
+                head += $" · by {group}: " + string.Join(" · ", counts.Take(10).Select(g => $"{Out.Clip(g.label, 200)} {g.count:#,0}"));
+                if (counts.Count > 10) head += $" · {counts.Count - 10} more groups; read values for {group} in {h.Name}";
             }
             o.Line(head);
             if (h.Rows.Count == 0) return;
-            var start = Math.Max(0, (page - 1) * limit);
+            var start = Out.Start(page, limit, offset);
             o.Table(new[] { "#", "id", "name", "type" }.Concat(cols), Rows(c, h.Rows.Skip(start).Take(limit), start, cols));
-            if (start + limit < h.Rows.Count)
-                o.More("items", h, page, limit, cols.Length > 0 ? ", cols:\"" + string.Join(",", cols) + "\"" : "");
+            o.More("items", h, page, limit, cols.Length > 0 ? ", cols:" + Newtonsoft.Json.JsonConvert.SerializeObject(cols) : "", start);
         }
 
         static void Props(Ctx c, Args a, Out o)
         {
-            var items = a.Items("items");
+            var offset = a.Int("offset");
+            var end = (long)offset + a.Int("limit");
+            if (end >= int.MaxValue) throw new NwError("bad_args", "property page offset is too large", "start at offset:0 and follow more:");
+            var items = a.Target("items").Items(c, (int)end + 1);
             var tabs = new HashSet<string>(a.List("tabs"), StringComparer.OrdinalIgnoreCase);
-            foreach (var item in items.Take(a.Int("limit")))
+            foreach (var item in items.Skip(offset).Take(a.Int("limit")))
             {
                 o.Line($"{Id(c.Doc, item)} {item.DisplayName} · {item.ClassDisplayName}");
                 foreach (var cat in item.PropertyCategories)
@@ -113,61 +143,95 @@ namespace NavisworksMcp
                     o.Line($"[{cat.DisplayName}] " + string.Join(" · ", cat.Properties.Select(p => p.DisplayName + "=" + Units.Value(c.Doc, p.Value))));
                 }
             }
-            if (items.Count > a.Int("limit")) o.Line($"{items.Count - a.Int("limit"):#,0} more items not shown; raise limit or narrow items");
+            if (a.Int("limit") > 0 && items.Count > end) o.Line(a.Next((int)end));
         }
 
         static void Tree(Ctx c, Args a, Out o)
         {
-            var roots = a.Has("under") ? a.Items("under").SelectMany(x => x.Children).ToList() : c.Doc.Models.RootItems.ToList();
-            var rows = new List<ModelItem>();
-            var depths = new List<int>();
-            void Walk(IEnumerable<ModelItem> level, int depth)
+            var h = a.Target("in")?.Whole;
+            if (h != null && h.Depths == null) throw new NwError("bad_args", "tree paging needs a tree handle", "read {what:\"tree\"} and follow its more: call");
+            if (h == null)
             {
-                foreach (var x in level)
+                var roots = a.Has("under") ? a.Items("under").SelectMany(x => x.Children).ToList() : c.Doc.Models.RootItems.ToList();
+                var rows = new List<object>();
+                var depths = new List<int>();
+                void Walk(IEnumerable<ModelItem> level, int depth)
                 {
-                    if (rows.Count >= a.Int("limit")) return;
-                    rows.Add(x);
-                    depths.Add(depth);
-                    if (depth + 1 < a.Int("depth")) Walk(x.Children, depth + 1);
+                    foreach (var x in level)
+                    {
+                        rows.Add(x);
+                        depths.Add(depth);
+                        if (depth + 1 < a.Int("depth")) Walk(x.Children, depth + 1);
+                    }
                 }
+                Walk(roots, 0);
+                h = c.Keep(new Handle { Kind = Kind.Items, Rows = rows, Depths = depths, Label = "tree" });
             }
-            Walk(roots, 0);
-            var h = c.Keep(new Handle { Kind = Kind.Items, Rows = rows.Cast<object>().ToList(), Label = "tree" });
-            o.Line($"{h.Name} tree nodes {rows.Count:#,0}" + (rows.Count >= a.Int("limit") ? $" (cut at limit {a.Int("limit")})" : ""));
-            o.Table(new[] { "#", "id", "name", "type", "children", "descendants" }, rows.Select((x, i) => new object[]
+            var limit = a.Int("limit");
+            var page = a.Int("page");
+            var start = Out.Start(page, limit, a.Int("offset"));
+            o.Line($"{h.Name} tree nodes {h.Rows.Count:#,0}");
+            o.Table(new[] { "#", "id", "name", "type", "children", "descendants" }, h.Rows.Skip(start).Take(limit).Cast<ModelItem>().Select((x, i) => new object[]
             {
-                i, Id(c.Doc, x), new string(' ', depths[i] * 2) + x.DisplayName, x.ClassDisplayName, x.Children.Count(), x.Descendants.Count(),
+                start + i, Id(c.Doc, x), new string(' ', h.Depths[start + i] * 2) + x.DisplayName, x.ClassDisplayName, x.Children.Count(), Descendants(c, x),
             }));
+            o.More("tree", h, page, limit, start: start);
+        }
+
+        static int Descendants(Ctx c, ModelItem item)
+        {
+            var id = Id(c.Doc, item);
+            if (!c.Host.Reads.Counts.TryGetValue(id, out var count)) c.Host.Reads.Counts[id] = count = item.Descendants.Count();
+            return count;
         }
 
         static void Values(Ctx c, Args a, Out o)
         {
             var prop = a.Str("prop");
+            var cacheKey = "values:" + prop;
+            var cache = !a.Has("in") && !a.Has("where");
             var scope = a.Target("in")?.Items(c);
-            IEnumerable<ModelItem> items = a.Has("where") ? Where.Parse(a.Str("where")).Find(c, scope) : scope ?? (IEnumerable<ModelItem>)c.Doc.Models.RootItemDescendantsAndSelf;
             var dot = prop.IndexOf('.');
             if (dot < 0) throw new NwError("bad_args", $"prop \"{prop}\" is not Tab.Prop", "e.g. Item.Type");
             var tab = prop.Substring(0, dot);
             var name = prop.Substring(dot + 1);
-            var found = items.Select(item => item.PropertyCategories.FindPropertyByDisplayName(tab, name)).Where(p => p != null).Select(p => (Units.Key(p.Value), Units.Value(c.Doc, p.Value))).ToList();
-            var top = Tally(found);
-            o.Line($"values {prop}: {top.Count:#,0} distinct in {found.Count:#,0} items (exact)");
-            o.Table(new[] { "value", "count" }, top.Take(a.Int("top")).Select(g => new object[] { g.label, g.count }));
-            if (top.Count > a.Int("top")) o.Line($"{top.Count - a.Int("top"):#,0} more values; raise top");
+            List<(string label, int count)> top = null;
+            if (!cache || !c.Host.Reads.Tallies.TryGetValue(cacheKey, out top))
+            {
+                IEnumerable<ModelItem> items;
+                if (a.Has("where")) items = Where.Parse(a.Str("where")).Find(c, scope);
+                else if (scope != null) items = scope;
+                else
+                {
+                    var search = new Search { Locations = SearchLocations.DescendantsAndSelf, PruneBelowMatch = false };
+                    search.Selection.SelectAll();
+                    search.SearchConditions.Add(SearchCondition.HasPropertyByDisplayName(tab, name));
+                    items = search.FindAll(c.Doc, false);
+                }
+                top = Tally(items.Select(item => item.PropertyCategories.FindPropertyByDisplayName(tab, name)).Where(p => p != null).Select(p => (Units.Key(p.Value), Units.Value(c.Doc, p.Value))));
+                if (cache) c.Host.Reads.Tallies[cacheKey] = top;
+            }
+            o.Line($"values {prop}: {top.Count:#,0} distinct in {top.Sum(g => g.count):#,0} items (exact)");
+            var offset = a.Int("offset");
+            o.Table(new[] { "value", "count" }, top.Skip(offset).Take(a.Int("top")).Select(g => new object[] { g.label, g.count }));
+            if (a.Int("top") > 0 && (long)offset + a.Int("top") < top.Count) o.Line(a.Next(offset + a.Int("top")));
         }
 
         static void Stats(Ctx c, Args a, Out o)
         {
+            if (c.Host.Reads.Text.TryGetValue("stats", out var cached)) { o.Line(cached); return; }
             var d = c.Doc;
+            var output = new Out();
             for (var i = 0; i < d.Models.Count; i++)
             {
                 var root = d.Models[i].RootItem;
                 var all = root.DescendantsAndSelf.ToList();
                 var geometry = all.Count(x => x.HasGeometry);
-                o.Line($"model {i} {root.DisplayName}: {all.Count:#,0} items, {geometry:#,0} with geometry, extents {Units.Box(d, root.BoundingBox())} mm");
+                output.Line($"model {i} {root.DisplayName}: {all.Count:#,0} items, {geometry:#,0} with geometry, extents {Units.Box(d, root.BoundingBox())} mm");
                 var types = all.Where(x => x.HasGeometry).GroupBy(x => x.ClassDisplayName).OrderByDescending(g => g.Count()).Take(15);
-                o.Line("  geometry by type: " + string.Join(" · ", types.Select(g => $"{g.Key} {g.Count():#,0}")));
+                output.Line("  geometry by type: " + string.Join(" · ", types.Select(g => $"{g.Key} {g.Count():#,0}")));
             }
+            o.Line(c.Host.Reads.Text["stats"] = output.Text);
         }
     }
 }

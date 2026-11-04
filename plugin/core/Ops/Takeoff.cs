@@ -26,7 +26,7 @@ namespace NavisworksMcp
     {
         public static readonly Op[] All =
         {
-            Catalog.Read("read", "qto", "; level:enum(catalog|takeoffs|totals)=totals by:str item:str in:target limit:int=50 page:int=1", List,
+            Catalog.Read("read", "qto", "; level:enum(catalog|takeoffs|totals)=totals by:str item:str in:target limit:int=50 page:int=1 offset:int=0", List,
                 "Quantification -> r#. catalog: groups and items; takeoffs: one row per taken-off model item; totals: sums by item (default), by group, or by a model property Tab.Prop. item limits to a group or item path. Lengths mm, areas m2, volumes m3",
                 "{level:\"totals\", by:\"Pset_Fixture.FireRating\"}"),
             Catalog.Apply("qto.group.add", "name:str; wbs:str", AddGroup,
@@ -323,9 +323,9 @@ namespace NavisworksMcp
             if (rows.Count == 0) return;
             var limit = a.Int("limit");
             var page = a.Int("page");
-            var start = Math.Max(0, (page - 1) * limit);
+            var start = Out.Start(page, limit, a.Int("offset"));
             o.Table(Header(level, by), rows.Skip(start).Take(limit).Select((r, i) => Cells(r, start + i, level, Out.Num)));
-            if (start + limit < rows.Count) o.More("qto", h, page, limit);
+            o.More("qto", h, page, limit, start: start, total: rows.Count);
         }
 
         static string Leaf(string path) => path.Substring(path.LastIndexOf('/') + 1);

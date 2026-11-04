@@ -12,7 +12,7 @@ after(() => nw?.close());
 
 const count = (pred: (b: (typeof boxes)[number]) => boolean) => boxes.filter(pred).length;
 const total = (text: string) => Number(/items ([\d,]+) \(exact\)/.exec(text)?.[1]?.replace(/,/g, ''));
-const handle = (text: string) => /^(r\d+) /.exec(text)![1]!;
+const handle = (text: string) => /^(r[\w-]+) /.exec(text)![1]!;
 
 test('status names the open document, its unit and its model', async () => {
 	const text = await nw.call('status');
@@ -147,7 +147,7 @@ test('export image writes a PNG of the requested size and can return it inline',
 test('script runs C# against the API and its handles feed other tools', async () => {
 	const tall = boxes.filter((b) => b.max[2] - b.min[2] >= 2995);
 	const text = await nw.call('script', { code: 'return nw.Handle(nw.Items("?has Pset_Fixture.FireRating or has Pset_Fixture.System or has Pset_Fixture.LoadBearing").Where(i => nw.Mm(i.BoundingBox().Size.Z) >= 2995));' });
-	const r = /^(r\d+)$/m.exec(text)![1]!;
+	const r = /^(r[\w-]+)$/m.exec(text)![1]!;
 	assert.equal(total(await nw.call('read', { what: 'items', in: r })), tall.length);
 	const bad = await nw.callRaw('script', { code: 'return undefinedThing;' });
 	assert.equal(bad.isError, true);

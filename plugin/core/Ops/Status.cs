@@ -36,7 +36,7 @@ namespace NavisworksMcp
         {
             var tool = a.Str("tool");
             var ops = Catalog.Ops.Where(x => x.Tool == tool && (!a.Has("op") || x.Name == a.Str("op"))).ToArray();
-            if (ops.Length == 0) throw new NwError("not_found", $"no op {a.Str("op")} in {tool}", "call help {tool:\"" + tool + "\"} to list its ops");
+            if (ops.Length == 0) throw new NwError("not_found", $"no op {a.Str("op")} in {tool}", Catalog.Ops.Any(x => x.Tool == tool) ? "call help {tool:\"" + tool + "\"} to list its ops" : "call help {tool:\"read\"}; valid tools: status, read, apply, export, job, script, help");
             var selector = tool == "read" || tool == "export" ? "what" : tool == "apply" ? "op" : null;
             foreach (var op in ops)
             {

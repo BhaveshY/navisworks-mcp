@@ -86,15 +86,16 @@ namespace NavisworksMcp
             string where = a.Str("where");
             if (where == null && target?.Whole?.Kind == Kind.Items)
                 where = target.Whole.Where;
-            if (where == null && target == null) throw new NwError("bad_args", "set.save needs items or where", "pass where:\"...\" for a live search set or items:\"r1\" for a fixed set");
+            if (where == null && target == null) throw new NwError("bad_args", "set.save needs items or where", "pass where:\"has Item.Name\" for a live search set or items:\"selection\" for a fixed set");
             var items = where == null ? target.Items(c) : null;
             var search = where == null ? null : Where.Parse(where);
-            var count = search != null ? search.Find(c, null).Count : items.Count;
+            var descendants = target?.Whole?.Descendants ?? false;
+            var count = search != null ? search.Find(c, null, descendants).Count : items.Count;
             var kind = search != null ? "search set (live)" : $"selection set of {items.Count:#,0} items";
             return new Step($"save {kind} \"{name}\"", () =>
             {
                 var sets = c.Doc.SelectionSets;
-                var set = search != null ? new SelectionSet(search.ToSearch(c)) : new SelectionSet(items);
+                var set = search != null ? new SelectionSet(search.ToSearch(c, descendants: descendants)) : new SelectionSet(items);
                 set.DisplayName = Sets.Leaf(name);
                 var folder = Sets.Folder(() => sets.RootItem, name, sets.AddCopy);
                 var existing = folder.Children.FirstOrDefault(x => x.DisplayName == set.DisplayName);

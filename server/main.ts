@@ -4,8 +4,8 @@ import { createInterface } from 'node:readline';
 import { Link, stateDir, type Catalog, type Reply } from './link.ts';
 
 const instructions = `Navisworks Manage. Start with status. Lengths mm, areas m2, volumes m3, angles degrees, dates ISO.
-read never changes anything; lists return a handle r#. Pass items:"r3", "r3#5", "r3#0-9", "selection", "last", "set:Folder/Name", "id:0:0/2/1" or "?Item.Type = IfcWall" instead of copying rows. Totals are exact.
-Change anything with ONE apply call holding all ops: validated first, one undo step, preview:true plans only, "$0" is the handle made by op 0.
+read never changes anything; lists return a handle r#. Pass items:"r3", "r3#5", "r3#0-9", "selection", "last", "set:Folder/Name", "id:0:0/2/1" or "?Item.Type = IfcWall" instead of copying rows. Totals are exact for the returned set. Searches return topmost matching items by default; descendants:true includes nested matches.
+Batch compatible changes in ONE apply call; open, append, merge, model.remove, refresh, tl.simulate, undo and redo must each run alone (see help): validated first, one undo step, preview:true plans only, "$0" is the handle made by op 0.
 export writes files. Long work returns a job j#: call job, and never repeat a write that is still running.
 Every error ends with next: do exactly that. help {tool, op} shows an example. script runs C# for anything else.`;
 
@@ -51,6 +51,8 @@ function render(r: Reply) {
 }
 
 async function call(id: string | number, name: string, args: Record<string, unknown>) {
+	if (name === 'status' && 'pid' in args && (typeof args.pid !== 'number' || !Number.isSafeInteger(args.pid) || args.pid <= 0))
+		return render({ ok: false, code: 'bad_args', message: 'pid must be a positive integer', next: 'call status without pid to use the current instance' });
 	if (name === 'status' && typeof args.pid === 'number') {
 		const { pid, ...rest } = args;
 		if (!link.pin(pid as number)) return render({ ok: false, code: 'not_found', message: `no running Navisworks with pid ${pid}`, next: 'call status to see the running instances' });
@@ -100,7 +102,7 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
 		const id = typeof msg === 'object' && msg !== null && 'id' in msg ? msg.id : null;
 		return send({ id, error: { code: -32600, message: 'invalid request: expected a JSON-RPC object with a method' } });
 	}
-	if (msg.method === 'tools/call' && (typeof msg.params?.name !== 'string' || (msg.params.arguments !== undefined && (typeof msg.params.arguments !== 'object' || msg.params.arguments === null))))
+	if (msg.method === 'tools/call' && (typeof msg.params?.name !== 'string' || (msg.params.arguments !== undefined && (typeof msg.params.arguments !== 'object' || msg.params.arguments === null || Array.isArray(msg.params.arguments)))))
 		return send({ id: msg.id ?? null, error: { code: -32602, message: 'tools/call needs params.name (string) and optional params.arguments (object)' } });
 	try {
 		const result = await handle(msg);

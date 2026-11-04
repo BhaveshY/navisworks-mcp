@@ -105,7 +105,7 @@ export async function startSession({ ifcConversion = 'v3' }: { ifcConversion?: '
 
 	if (options) {
 		let opened = await callRaw('apply', { ops: [{ op: 'open', path: fixture }] });
-		for (let job; (job = /next: job \{id:"(j\d+)"/.exec(opened.text)?.[1]); ) opened = await callRaw('job', { id: job, wait: 60000 });
+		for (let job; (job = /next: job \{id:"(j[\w-]+)"/.exec(opened.text)?.[1]); ) opened = await callRaw('job', { id: job, wait: 60000 });
 		if (opened.isError) throw new Error(`reopening the fixture with the session options failed: ${opened.text}`);
 	}
 

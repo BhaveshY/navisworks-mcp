@@ -9,7 +9,7 @@ let nw: Session;
 before(async () => (nw = await startSession()));
 after(() => nw?.close());
 
-const handle = (text: string) => /^(r\d+) /.exec(text)![1]!;
+const handle = (text: string) => /^(r[\w-]+) /.exec(text)![1]!;
 const total = (text: string) => Number(/ ([\d,]+) \(exact\)/.exec(text)?.[1]?.replace(/,/g, ''));
 
 /// Quantities qto.takeoff from:"bbox" derives from an axis-aligned box, in m, m2, m3.
@@ -83,7 +83,7 @@ test('bounding-box takeoff gives counts, lengths, areas and volumes of the geome
 			{ op: 'qto.takeoff', items: '?Pset_Fixture.System = Supply', item: 'MEP/Ducts/Supply', from: 'bbox' },
 		],
 	});
-	assert.match(took, new RegExp(`0 took off ${walls.length} items into "Structure/Walls" -> r\\d+; 0 had quantities from model properties`));
+	assert.match(took, new RegExp(`0 took off ${walls.length} items into "Structure/Walls" -> r[\\w-]+; 0 had quantities from model properties`));
 	assert.match(took, /undo: apply/);
 
 	const totals = await nw.call('read', { what: 'qto' });

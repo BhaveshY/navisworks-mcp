@@ -37,6 +37,7 @@ namespace NavisworksMcp
         public readonly string Epoch = Guid.NewGuid().ToString("N").Substring(0, 8);
         public readonly string CorePath;
         public readonly Handles Handles = new Handles();
+        public readonly ReadCache Reads = new ReadCache();
         readonly Control ui = new Control();
         readonly ConcurrentDictionary<string, Job> jobs = new ConcurrentDictionary<string, Job>();
         readonly CancellationTokenSource stopping = new CancellationTokenSource();
@@ -62,9 +63,20 @@ namespace NavisworksMcp
 
         void Watch(Autodesk.Navisworks.Api.Document doc)
         {
-            Interlocked.Increment(ref Handles.Generation);
-            if (doc != null) doc.Models.CollectionChanged += (s, e) => Interlocked.Increment(ref Handles.Generation);
+            InvalidateModels();
+            if (doc != null)
+            {
+                doc.Models.CollectionChanged += (s, e) => InvalidateModels();
+                doc.ActiveSheetChanged += (s, e) => InvalidateModels();
+                doc.FilesUpdated += (s, e) => InvalidateModels();
+                doc.TransactionEnded += (s, e) => Reads.Clear();
+                doc.UnitsChanged += (s, e) => Reads.Clear();
+                doc.Models.ModelItemPropertiesChanged += (s, e) => Reads.Clear();
+                doc.Models.ModelTransformChanged += (s, e) => Reads.Clear();
+            }
         }
+
+        void InvalidateModels() { Handles.Invalidate(); Reads.Clear(); }
 
         static void WriteAtomic(string path, string text, bool required)
         {

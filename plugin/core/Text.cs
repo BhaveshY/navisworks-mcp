@@ -55,8 +55,8 @@ namespace NavisworksMcp
         public JObject ToWire(long id)
         {
             var o = new JObject { ["id"] = id, ["ok"] = Code == null };
-            if (Code != null) { o["code"] = Code; o["message"] = Message; o["next"] = Next; }
-            else o["text"] = Text;
+            if (Code != null) { o["code"] = Out.Clip(Code, 100); o["message"] = Out.Clip(Message, 24000); o["next"] = Out.Clip(Next, 5000); }
+            else o["text"] = Out.Clip(Text, Out.Budget);
             if (JobId != null) o["job"] = JobId;
             if (Png != null) o["png"] = Convert.ToBase64String(Png);
             return o;
@@ -66,8 +66,21 @@ namespace NavisworksMcp
     /// Builds the compact text the agent reads: lines, pipe tables, and a `more:` line when a list is cut.
     sealed class Out
     {
+        public const int Budget = 30000;
         readonly StringBuilder sb = new StringBuilder();
+        readonly Ctx context;
+        public bool Paging;
+        public int TableCount;
         public byte[] Png { get; set; }
+        public Out(Ctx context = null) { this.context = context; }
+        public static string Clip(string text, int length) => text == null || text.Length <= length ? text : text.Substring(0, length - 15) + " [text clipped]";
+
+        public static int Start(int page, int limit, int offset = 0)
+        {
+            var n = (long)(page - 1) * limit + offset;
+            if (n < 0 || n > int.MaxValue) throw new NwError("bad_args", "page offset is out of range", "start at page:1 and follow more:");
+            return (int)n;
+        }
 
         public Out Line(string text)
         {
@@ -77,14 +90,29 @@ namespace NavisworksMcp
 
         public Out Table(IEnumerable<string> header, IEnumerable<IEnumerable<object>> rows)
         {
-            Line(string.Join("|", header));
-            foreach (var r in rows) Line(string.Join("|", r.Select(Cell)));
+            var headings = header.ToArray();
+            Line(string.Join("|", headings));
+            TableCount = 0;
+            foreach (var r in rows)
+            {
+                var cells = r.Select(Cell).ToArray();
+                // A single wide cell must not prevent paging from advancing by at least one row.
+                var line = string.Join("|", cells.Select((x, i) => i < headings.Length && (headings[i] == "#" || headings[i].StartsWith("id", StringComparison.OrdinalIgnoreCase)) ? x : Clip(x, Math.Max(32, 12000 / Math.Max(1, cells.Length)))));
+                if (Paging && sb.Length + line.Length > Budget - 6000) break;
+                Line(line);
+                TableCount++;
+            }
             return this;
         }
 
         /// The exact call that returns the next page of a handle.
-        public Out More(string what, Handle h, int page, int limit, string extra = "") =>
-            Line($"more: read {{what:\"{what}\", in:\"{h.Name}\", page:{page + 1}, limit:{limit}{extra}}}");
+        public Out More(string what, Handle h, int page, int limit, string extra = "", int start = 0, int total = -1)
+        {
+            if (limit <= 0 || TableCount <= 0 || (long)start + TableCount >= (total < 0 ? h.Rows.Count : total)) return this;
+            if (TableCount == limit && start % limit == 0 && start / limit + 2 <= 1000000)
+                return Line($"more: read {{what:\"{what}\", in:\"{h.Name}\", page:{start / limit + 2}, limit:{limit}{extra}}}");
+            return Line($"more: read {{what:\"{what}\", in:\"{h.Name}\", page:1, offset:{start + TableCount}, limit:{limit}{extra}}}");
+        }
 
         public static string Cell(object v)
         {
@@ -103,8 +131,28 @@ namespace NavisworksMcp
 
         /// Set by ops that hand back a finished reply as is, such as `job` returning another call's result.
         public Reply Reply;
+        public string Text => sb.ToString().TrimEnd('\n');
 
-        public Reply ToReply() => Reply ?? new Reply { Text = sb.ToString().TrimEnd('\n'), Png = Png };
+        public Reply ToReply()
+        {
+            if (Reply != null) return Reply;
+            var text = Text;
+            if (text.Length > Budget && context?.Doc != null)
+            {
+                var chunks = new List<object>();
+                while (text.Length > Budget - 1000)
+                {
+                    var end = text.LastIndexOf('\n', Budget - 1000);
+                    if (end < 1) end = Budget - 1000;
+                    chunks.Add(text.Substring(0, end));
+                    text = text.Substring(end).TrimStart('\n');
+                }
+                chunks.Add(text);
+                var h = context.Keep(new Handle { Kind = Kind.Text, Rows = chunks, Label = "output pages" });
+                text = (string)chunks[0] + $"\nmore: read {{what:\"page\", in:\"{h.Name}\", offset:1}}";
+            }
+            return new Reply { Text = Clip(text, Budget), Png = Png };
+        }
     }
 
     static class Units

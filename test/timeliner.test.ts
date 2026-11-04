@@ -17,7 +17,7 @@ after(() => nw?.close());
 
 const count = (pred: (b: (typeof boxes)[number]) => boolean) => boxes.filter(pred).length;
 const total = (text: string) => Number(/tasks ([\d,]+) \(exact\)/.exec(text)?.[1]?.replace(/,/g, ''));
-const handle = (text: string) => /^(r\d+) /.exec(text)![1]!;
+const handle = (text: string) => /^(r[\w-]+) /.exec(text)![1]!;
 
 /// The table row whose task column (trimmed) is `name`, as cells keyed by header.
 function row(text: string, name: string): Record<string, string> {

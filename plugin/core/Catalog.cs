@@ -36,7 +36,7 @@ namespace NavisworksMcp
         public bool Standalone;
         /// Marks an op that must be the only op in its apply call and runs outside a transaction (undo, open, save).
         public Op Alone() { Standalone = true; return this; }
-        public string Line => (Tool == Name ? "" : Name + " ") + Signature.Trim() + " : " + Doc;
+        public string Line => (Tool == Name ? "" : Name + " ") + Signature.Trim() + " : " + Doc + (Standalone ? "; must be the only op in its apply call" : "");
     }
 
     sealed class NwError : Exception
@@ -53,7 +53,7 @@ namespace NavisworksMcp
         {
             ["status"] = "Instance, document, models, units, selection and running jobs. Call first.",
             ["read"] = "Read anything; never changes the model. Lists return a handle r# with an exact total.",
-            ["apply"] = "Change the model or view: ops run in order as ONE undo step; preview:true only plans. \"$0\" is the handle made by op 0.",
+            ["apply"] = "Change the model or view: compatible ops run in order as ONE undo step; preview:true only plans. Ops marked only op must run alone: open, append, merge, refresh, model.remove, undo, redo, tl.simulate. \"$0\" is the handle made by op 0.",
             ["export"] = "Write files: images, NWD/NWF, reports, CSV. Several outputs per call, run in order.",
             ["job"] = "Wait for or cancel a job j# that outlived its call.",
             ["script"] = "Run C# 5 against the Navisworks API for anything the other tools lack. The code is the body of `object Run(Nw nw)`; nw.Doc, nw.Items(target), nw.Handle(items) -> r#, nw.Mm(length), nw.Out.",
@@ -177,7 +177,7 @@ namespace NavisworksMcp
             {
                 switch (tool)
                 {
-                    case "read": return RunRead(c, Find(tool, (string)args["what"], "what"), args);
+                    case "read": return RunRead(c, Find(tool, Selector(args, "what"), "what"), args);
                     case "apply": return RunApply(c, args);
                     case "export": return RunExport(c, args);
                     default:
@@ -190,6 +190,13 @@ namespace NavisworksMcp
             {
                 return Reply.Error("failed", e.GetType().Name + ": " + e.Message, "check the arguments with help {tool:\"" + tool + "\"}; if they are right, report this error");
             }
+        }
+
+        static string Selector(JObject args, string name)
+        {
+            if (args[name]?.Type != JTokenType.String)
+                throw new NwError("bad_args", name + " must be a string", "help {tool:\"read\"} lists valid operations; supply the operation name as a string");
+            return (string)args[name];
         }
 
         public static Op Find(string tool, string name, string selector)
@@ -209,7 +216,7 @@ namespace NavisworksMcp
         {
             var a = new Args(c, op, args);
             if (c.Doc != null) RequireDocument(c, op);
-            var o = new Out();
+            var o = new Out(c) { Paging = op.Params.Any(p => p.Name == "page") };
             op.Read(c, a, o);
             return o.ToReply();
         }
@@ -217,8 +224,8 @@ namespace NavisworksMcp
         static Reply RunExport(Ctx c, JObject args)
         {
             var outs = Items(args, "out");
-            var o = new Out();
-            var bound = outs.Select(x => { var op = Find("export", (string)x["what"], "what"); return (op, args: new Args(c, op, x)); }).ToList();
+            var o = new Out(c);
+            var bound = outs.Select(x => { var op = Find("export", Selector(x, "what"), "what"); return (op, args: new Args(c, op, x)); }).ToList();
             foreach (var (op, a) in bound)
             {
                 RequireDocument(c, op);
@@ -238,10 +245,12 @@ namespace NavisworksMcp
         static Reply RunApply(Ctx c, JObject args)
         {
             var list = Items(args, "ops");
+            if (args["preview"] != null && args["preview"].Type != JTokenType.Boolean)
+                throw new NwError("bad_args", "preview must be boolean", "use preview:true to plan, or omit preview to apply");
             var preview = (bool?)args["preview"] ?? false;
             var bound = list.Select((x, i) =>
             {
-                try { var op = Find("apply", (string)x["op"], "op"); return (op, args: new Args(c, op, x)); }
+                try { var op = Find("apply", Selector(x, "op"), "op"); return (op, args: new Args(c, op, x)); }
                 catch (NwError e) { throw new NwError(e.Code, $"op {i}: {e.Message}", e.Next); }
             }).ToList();
             foreach (var (op, _) in bound) RequireDocument(c, op);
@@ -249,7 +258,7 @@ namespace NavisworksMcp
             if (alone != null && bound.Count > 1)
                 throw new NwError("bad_args", alone.Name + " must be the only op in its apply call", "send " + alone.Name + " in its own apply call");
 
-            var o = new Out();
+            var o = new Out(c);
             if (preview)
             {
                 c.Preview = true;
@@ -319,10 +328,28 @@ namespace NavisworksMcp
                     continue;
                 }
                 if (!Fits(p, v)) throw new NwError("bad_args", $"{op.Name}: \"{p.Name}\" must be {Describe(p)}, got {v.ToString(Newtonsoft.Json.Formatting.None)}", Usage);
+                if (p.Type == "int")
+                {
+                    var min = new[] { "limit", "top", "wait", "index", "model", "offset" }.Contains(p.Name) ? 0 : 1;
+                    var max = p.Name == "page" ? 1000000 : p.Name == "depth" ? 100 : p.Name == "wait" ? 120000 : p.Name == "w" || p.Name == "h" ? 16384 : p.Name == "limit" || p.Name == "top" ? 100000 : int.MaxValue;
+                    if (!long.TryParse(v.ToString(), out var n) || n < min || n > max)
+                        throw new NwError("bad_args", p.Name + " must be an integer in " + min + ".." + max, "set " + p.Name + " to " + (p.Name == "limit" || p.Name == "top" ? 50 : p.Name == "wait" ? 1000 : min));
+                }
             }
+            if (op.Params.Any(p => p.Name == "page") && ((long)Int("page") - 1) * Int("limit") > int.MaxValue)
+                throw new NwError("bad_args", "page and limit exceed the supported row offset", "start with page:1 and follow the returned more: call");
+            if (op.Params.Any(p => p.Name == "cols") && (List("cols").Length > 32 || List("cols").Any(x => x.Length > 128)))
+                throw new NwError("bad_args", "cols supports at most 32 property names of at most 128 characters", "request fewer columns per read or export a CSV");
         }
 
-        string Usage => "usage: " + op.Line + (op.Example != null ? " e.g. " + op.Example : "");
+        string Usage => "usage: " + op.Line;
+
+        public string Next(int offset)
+        {
+            var next = (JObject)raw.DeepClone();
+            next["offset"] = offset;
+            return "more: read " + next.ToString(Newtonsoft.Json.Formatting.None);
+        }
 
         static bool Fits(Param p, JToken v)
         {

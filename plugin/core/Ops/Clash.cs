@@ -20,7 +20,7 @@ namespace NavisworksMcp
         public static readonly Op[] All =
         {
             Catalog.Read("read", "tests", "", ListTests, "clash tests: type, tolerance, status, last run, result counts by status, native groups, selections", "{}"),
-            Catalog.Read("read", "clashes", "; test:str in:target where:where status:strs group:str limit:int=50 page:int=1", Clashes,
+            Catalog.Read("read", "clashes", "; test:str in:target where:where status:strs group:str limit:int=50 page:int=1 offset:int=0", Clashes,
                 "results of a clash test -> r# (as an items target it means both items of each result). where keeps results where either item matches; group counts by " + Keys,
                 "{test:\"Ducts vs Walls\", status:\"new,active\", group:\"level\"}"),
             Catalog.Apply("clash.add", "name:str a:target b:target; " + Types + "=hard tol:len=0 self:bool=false rules:strs", Add,
@@ -207,7 +207,7 @@ namespace NavisworksMcp
                 }
                 h = c.Keep(new Handle { Kind = Kind.Clashes, Rows = rows.Select(r => (object)r.CreateCopy()).ToList(), Label = test?.DisplayName ?? target.Text });
             }
-            Page(c, o, h, a.Str("group"), a.Int("limit"), a.Int("page"));
+            Page(c, o, h, a.Str("group"), a.Int("limit"), a.Int("page"), a.Int("offset"));
         }
 
         static ClashResultStatus ParseStatus(string s)
@@ -216,20 +216,22 @@ namespace NavisworksMcp
             throw new NwError("bad_args", $"\"{s}\" is not a clash status", "use " + string.Join(", ", Statuses.Select(Name)));
         }
 
-        static void Page(Ctx c, Out o, Handle h, string group, int limit, int page)
+        static void Page(Ctx c, Out o, Handle h, string group, int limit, int page, int offset)
         {
             var rows = h.Rows.Cast<ClashResult>().Select(r => Live(c, r)).ToList();
             var head = $"{h.Name} clashes {rows.Count:#,0} (exact) · {h.Label}";
             if (group != null)
             {
                 CheckKey(group);
-                head += $" · by {group}: " + string.Join(" · ", rows.GroupBy(r => Key(c, r, group) ?? "-").OrderByDescending(g => g.Count()).ThenBy(g => g.Key).Select(g => $"{g.Key} {g.Count():#,0}"));
+                var groups = rows.GroupBy(r => Key(c, r, group) ?? "-").OrderByDescending(g => g.Count()).ThenBy(g => g.Key).ToList();
+                head += $" · by {group}: " + string.Join(" · ", groups.Take(10).Select(g => $"{Out.Clip(g.Key, 200)} {g.Count():#,0}"));
+                if (groups.Count > 10) head += $" · {groups.Count - 10} more groups";
             }
             o.Line(head);
             if (rows.Count == 0 || limit <= 0) return;
-            var start = Math.Max(0, (page - 1) * limit);
+            var start = Out.Start(page, limit, offset);
             o.Table(new[] { "#" }.Concat(Header), rows.Skip(start).Take(limit).Select((r, i) => new object[] { start + i }.Concat(Cells(c, r))));
-            if (start + limit < rows.Count) o.More("clashes", h, page, limit);
+            o.More("clashes", h, page, limit, start: start, total: rows.Count);
         }
 
         /// One side of a test: an existing set, a where to save as a search set, or fixed items.

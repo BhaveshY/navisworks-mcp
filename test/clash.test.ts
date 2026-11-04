@@ -17,7 +17,7 @@ const levelAt = (z: number) => storeys.filter((s) => s.elevation <= z).at(-1)!.n
 const hardDuctsWalls = pairs(of('IfcDuctSegment'), of('IfcWall'), overlaps);
 const clearColumnsSlab = (tol: number) => pairs(of('IfcColumn'), of('IfcSlab'), (a, b) => gap(a, b) < tol);
 
-const handle = (text: string) => /^(r\d+) clashes/m.exec(text)![1]!;
+const handle = (text: string) => /^(r[\w-]+) clashes/m.exec(text)![1]!;
 const total = (text: string) => Number(/clashes ([\d,]+) \(exact\)/.exec(text)?.[1]?.replace(/,/g, ''));
 type Row = Record<'clash' | 'status' | 'dist' | 'item1' | 'id1' | 'item2' | 'id2' | 'level' | 'grid' | 'assigned' | 'centre' | 'group', string>;
 const rows = (text: string): Row[] => {
@@ -127,7 +127,7 @@ test('native groups by a property of item2 persist in the test, keep status, and
 
 test('clearance finds the columns 10 mm below the slab; hard does not', async () => {
 	const slab = await nw.call('read', { what: 'items', where: 'Item.Type = IfcSlab' });
-	const slabHandle = /^(r\d+) items/.exec(slab)![1]!;
+	const slabHandle = /^(r[\w-]+) items/.exec(slab)![1]!;
 	await apply({ op: 'clash.add', name: 'Columns vs Slab', a: '?Item.Type = IfcColumn', b: slabHandle, type: 'clearance', tol: 20 });
 	assert.equal((await testRow('Columns vs Slab'))!.b, 'set:Clash/Columns vs Slab B');
 	assert.match(await apply({ op: 'clash.run', test: 'Columns vs Slab' }), new RegExp(`ran "Columns vs Slab": ${clearColumnsSlab(20).length} results`));

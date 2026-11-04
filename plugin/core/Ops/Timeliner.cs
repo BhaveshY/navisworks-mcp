@@ -17,7 +17,7 @@ namespace NavisworksMcp
     {
         public static readonly Op[] All =
         {
-            Catalog.Read("read", "tasks", "; where:where in:target limit:int=50 page:int=1", List,
+            Catalog.Read("read", "tasks", "; where:where in:target limit:int=50 page:int=1 offset:int=0", List,
                 "TimeLiner tasks -> r#, with the document's task types and the simulation date. where filters fields name, path, type, start, end, actual_start, actual_end, items with = != ~ > >= < <= joined by and",
                 "{where:\"type = Construct and start >= 2026-03-01\"}"),
             Catalog.Apply("tl.add", "name:str start:date end:date; task_type:str=Construct parent:str items:target actual_start:date actual_end:date", Add,
@@ -84,15 +84,13 @@ namespace NavisworksMcp
 
         static string Id(DocumentTimeliner tl, TimelinerTask t) => string.Join(".", tl.TaskCreateIndexPath(t).Select(i => i + 1));
 
-        static readonly Regex RefRx = new Regex(@"^(r\d+(#[\d-]+)?|\$\d+|last)$");
-
         static List<TimelinerTask> Resolve(Ctx c, Args a, string name)
         {
             var tl = Tl(c);
             var list = new List<TimelinerTask>();
             foreach (var s in a.List(name))
             {
-                if (RefRx.IsMatch(s))
+                if (Target.IsReference(s))
                     foreach (var row in Target.Parse(c, new JValue(s)).Rows(c))
                         list.Add(row as TimelinerTask ?? throw new NwError("bad_args", $"{s} holds {row.GetType().Name} rows, not tasks", "pass a handle from read {what:\"tasks\"} or a task path"));
                 else list.Add(Find(tl, s) ?? throw new NwError("not_found", $"no task \"{s}\"", "list tasks with read {what:\"tasks\"} and use the path or the handle row"));
@@ -133,14 +131,14 @@ namespace NavisworksMcp
 
         static Func<TimelinerTask, bool> Filter(Ctx c, string where)
         {
-            var conds = Regex.Split(where.Trim(), @"\s+and\s+", RegexOptions.IgnoreCase).Select(piece =>
+            var conds = Where.AndParts(where.Trim()).Select(piece =>
             {
                 var m = CondRx.Match(piece.Trim());
                 if (!m.Success || !Fields.Contains(m.Groups["f"].Value))
                     throw new NwError("bad_args", $"cannot read task condition \"{piece.Trim()}\"", "write field op value with fields " + string.Join(", ", Fields) + ", e.g. type = Construct and start >= 2026-03-01");
                 var field = m.Groups["f"].Value;
                 var op = m.Groups["op"].Value;
-                var text = m.Groups["v"].Value.Trim().Trim('"');
+                var text = Where.Unquote(m.Groups["v"].Value.Trim());
                 var isDate = field == "start" || field == "end" || field.StartsWith("actual_");
                 DateTime date = default;
                 if (isDate && !DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
@@ -192,7 +190,7 @@ namespace NavisworksMcp
             }
             var limit = a.Int("limit");
             var page = a.Int("page");
-            var start = Math.Max(0, (page - 1) * limit);
+            var start = Out.Start(page, limit, a.Int("offset"));
             var header = new List<string> { "#", "id", "task", "type", "start", "end", "actual_start", "actual_end", "items", "attached" };
             if (simulating) header.Add("active");
             o.Table(header, h.Rows.Skip(start).Take(limit).Select((r, i) =>
@@ -207,7 +205,7 @@ namespace NavisworksMcp
                 if (simulating) row.Add(sim.IsActiveTask(t) ? "yes" : "no");
                 return row;
             }));
-            if (start + limit < h.Rows.Count) o.More("tasks", h, page, limit);
+            o.More("tasks", h, page, limit, start: start);
         }
 
         static string TaskType(DocumentTimeliner tl, string name)
