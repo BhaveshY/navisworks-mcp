@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve, sep } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { binaries, build, findCsc, install, installed, tar, version, versions } from './plugin.ts';
 import { checkRuntime, claudeSnippet, codexSnippet, failure, oneLine, options, registerClaude, registerCodex, years } from './installation.ts';
 import { doctor } from './doctor.ts';
@@ -99,11 +99,7 @@ async function setup() {
 		return 0;
 	} catch (e) { failure(label, e, next); return 1; }
 	finally {
-		if (temp && existsSync(temp)) {
-			// Only the unique directory created by this invocation is disposable.
-			if (!resolve(temp).startsWith(resolve(tmpdir()) + sep + 'navisworks-setup-')) throw new Error('unexpected temporary directory');
-			rmSync(temp, { recursive: true, force: true, maxRetries: 3 });
-		}
+		if (temp && existsSync(temp)) rmSync(temp, { recursive: true, force: true, maxRetries: 3 });
 	}
 }
 

@@ -41,7 +41,7 @@ function livePids() {
 function probe() {
 	const child = spawn(process.execPath, [main], {
 		stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-		env: { ...process.env, NAVISWORKS_MCP_READ_ONLY_DISCOVERY: '1', NAVISWORKS_MCP_PID: '' },
+		env: { ...process.env, NAVISWORKS_MCP_PID: '' },
 	});
 	const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
 	let sequence = 0;
