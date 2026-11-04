@@ -55,6 +55,8 @@ Navisworks 2027 opens IFC with Conversion Method v4 by default, which gives elem
 
 Lengths are in mm, areas in m2, volumes in m3, and dates in ISO format. Every error ends with `next:`, the exact call or action that fixes it.
 
+`clash.add` and `clash.update` accept `rules`, an array or comma-separated list of built-in rule display names, such as `["Items in same file"]` or `["Items in same composite object"]`. `read {what:"tests"}` lists each test's rules. Updating `rules` replaces the list; `[]` clears it, and omitting it preserves existing rules. Run the test again after changing rules. Previously detected pairs that a rule now suppresses remain in native history as resolved; read with `status:"new,active"` to count current clashes. An unknown rule returns the available names.
+
 For example, these calls flag every F90 wall and render the result:
 
 ```

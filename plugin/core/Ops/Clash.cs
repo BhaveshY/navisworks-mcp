@@ -23,11 +23,11 @@ namespace NavisworksMcp
             Catalog.Read("read", "clashes", "; test:str in:target where:where status:strs group:str limit:int=50 page:int=1", Clashes,
                 "results of a clash test -> r# (as an items target it means both items of each result). where keeps results where either item matches; group counts by " + Keys,
                 "{test:\"Ducts vs Walls\", status:\"new,active\", group:\"level\"}"),
-            Catalog.Apply("clash.add", "name:str a:target b:target; " + Types + "=hard tol:len=0 self:bool=false", Add,
-                "add a clash test. A set stays live as a set reference; a where (?.. or a where-handle) is saved as search set \"Clash/<name> A|B\" and referenced; other targets are fixed items",
+            Catalog.Apply("clash.add", "name:str a:target b:target; " + Types + "=hard tol:len=0 self:bool=false rules:strs", Add,
+                "add a clash test. A set stays live as a set reference; a where (?.. or a where-handle) is saved as search set \"Clash/<name> A|B\" and referenced; other targets are fixed items. rules: built-in display names, e.g. Items in same file or Items in same composite object; omitted means none",
                 "{name:\"Ducts vs Walls\", a:\"set:MEP/Ducts\", b:\"?Item.Type = IfcWall\", type:\"clearance\", tol:25}"),
-            Catalog.Apply("clash.update", "test:str; a:target b:target " + Types + " tol:len self:bool to:str", Update,
-                "change a test's selections, type, tolerance, self-intersect or name (to); results stay until the next run",
+            Catalog.Apply("clash.update", "test:str; a:target b:target " + Types + " tol:len self:bool to:str rules:strs", Update,
+                "change a test's selections, type, tolerance, self-intersect, built-in rules or name (to); rules replaces the rule list, [] clears it, omission preserves it. Results stay until the next run",
                 "{test:\"Ducts vs Walls\", tol:50, to:\"Ducts vs Walls 50\"}"),
             Catalog.Apply("clash.delete", "test:str", Delete, "delete a clash test and its results", "{test:\"Ducts vs Walls\"}"),
             Catalog.Apply("clash.run", "test:str", Run, "run one test, or every test with test:\"all\"; a long run returns a job j#", "{test:\"Ducts vs Walls\"}"),
@@ -154,7 +154,7 @@ namespace NavisworksMcp
             var tests = Tests(Root(c).Children).ToList();
             o.Line($"tests {tests.Count:#,0} (exact)");
             if (tests.Count == 0) return;
-            o.Table(new[] { "test", "type", "tol", "status", "last run", "results" }.Concat(Statuses.Select(Name)).Concat(new[] { "groups", "a", "b" }), tests.Select(x =>
+            o.Table(new[] { "test", "type", "tol", "status", "last run", "results" }.Concat(Statuses.Select(Name)).Concat(new[] { "groups", "a", "b", "rules" }), tests.Select(x =>
             {
                 var t = x.test;
                 var results = Results(t).ToList();
@@ -163,7 +163,7 @@ namespace NavisworksMcp
                     x.path, Name(t.TestType), Units.ToMm(c.Doc, t.Tolerance), t.Status.ToString().ToLowerInvariant(),
                     t.LastRun?.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), results.Count,
                 }.Concat(Statuses.Select(s => (object)results.Count(r => r.Status == s)))
-                 .Concat(new object[] { t.Children.OfType<ClashResultGroup>().Count(), Describe(c, t.SelectionA), Describe(c, t.SelectionB) });
+                 .Concat(new object[] { t.Children.OfType<ClashResultGroup>().Count(), Describe(c, t.SelectionA), Describe(c, t.SelectionB), string.Join(", ", t.IgnoreRules.Select(r => r.DisplayName)) });
             }));
         }
 
@@ -279,6 +279,27 @@ namespace NavisworksMcp
 
         static string Settings(Ctx c, ClashTest t) => $"{Name(t.TestType)}, tol {Units.Mm(c.Doc, t.Tolerance)} mm";
 
+        static void SetRules(Ctx c, ClashTest test, Args a)
+        {
+            if (!a.Has("rules")) return;
+            using (var builtins = new RuleCollection())
+            {
+                Autodesk.Navisworks.Api.Interop.LcClClashRules.LoadBaseRuleSet(builtins, c.Doc.State);
+                test.IgnoreRules.Clear();
+                foreach (var name in a.List("rules").Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    var rule = builtins.FirstOrDefault(r => string.Equals(r.DisplayName, name, StringComparison.OrdinalIgnoreCase));
+                    if (rule == null || !rule.IsImplemented)
+                        throw new NwError("bad_args", $"unknown or unavailable clash rule \"{name}\"",
+                            "use built-in rule names: " + string.Join(", ", builtins.Where(r => r.IsImplemented).Select(r => r.DisplayName)) + "; use [] for none");
+                    // The native runner applies every member, even IsEnabled=false. The UI also copies only selected rules.
+                    var copy = rule.CreateCopy();
+                    copy.IsEnabled = true;
+                    test.IgnoreRules.Add(copy); // The collection takes ownership.
+                }
+            }
+        }
+
         static void CheckTolerance(ClashTest t)
         {
             if (t.TestType == ClashTestType.Clearance && t.Tolerance <= 0)
@@ -294,6 +315,7 @@ namespace NavisworksMcp
             var sideB = ReadSide(c, a, "b", name);
             var test = new ClashTest { DisplayName = name, TestType = TestTypes[a.Str("type")], Tolerance = a.Len("tol") };
             CheckTolerance(test);
+            SetRules(c, test, a);
             test.SelectionA.SelfIntersect = test.SelectionB.SelfIntersect = a.Bool("self");
             return new Step($"add clash test \"{name}\" ({Settings(c, test)}): a {sideA.Plan} · b {sideB.Plan}", () =>
             {
@@ -314,14 +336,17 @@ namespace NavisworksMcp
             if (a.Has("type")) copy.TestType = TestTypes[a.Str("type")];
             if (a.Has("tol")) copy.Tolerance = a.Len("tol");
             CheckTolerance(copy);
+            SetRules(c, copy, a);
+            if (a.Has("rules")) copy.Status = ClashTestStatus.Old;
             if (a.Has("self")) copy.SelectionA.SelfIntersect = copy.SelectionB.SelfIntersect = a.Bool("self");
             var changes = new List<string>();
             if (a.Has("type") || a.Has("tol")) changes.Add(Settings(c, copy));
             if (sideA != null) changes.Add("a " + sideA.Plan);
             if (sideB != null) changes.Add("b " + sideB.Plan);
             if (a.Has("self")) changes.Add("self-intersect " + (a.Bool("self") ? "on" : "off"));
+            if (a.Has("rules")) changes.Add("rules " + (copy.IgnoreRules.Count == 0 ? "none" : string.Join(", ", copy.IgnoreRules.Select(r => r.DisplayName))));
             if (name != test.DisplayName) changes.Add($"rename to \"{name}\"");
-            if (changes.Count == 0) throw new NwError("bad_args", "clash.update changes nothing", "pass at least one of a, b, type, tol, self, to");
+            if (changes.Count == 0) throw new NwError("bad_args", "clash.update changes nothing", "pass at least one of a, b, type, tol, self, to, rules");
             var summary = string.Join(" · ", changes);
             var guid = test.Guid;
             var old = test.DisplayName;

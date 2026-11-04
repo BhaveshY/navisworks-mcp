@@ -202,3 +202,44 @@ test('native groups and edits are saved in the NWD', async () => {
 	assert.equal(before.groups, String(walls.size));
 	assert.deepEqual(await testRow('Ducts vs Walls'), before);
 });
+
+test('built-in rules suppress only their matching pairs and survive updates and saving', async () => {
+	// Every fixture item belongs to one IFC file; each duct/wall pair consists of distinct composite objects.
+	const name = 'Rule coverage';
+	const sameFile = 'Items in same file';
+	const sameComposite = 'Items in same composite object';
+	await apply({ op: 'clash.add', name, a: '?Item.Type = IfcDuctSegment', b: '?Item.Type = IfcWall', rules: [sameFile, sameFile.toLowerCase()] });
+	assert.equal((await testRow(name))!.rules, sameFile);
+	await apply({ op: 'clash.run', test: name });
+	assert.equal(total(await nw.call('read', { what: 'clashes', test: name })), 0);
+
+	await apply({ op: 'clash.update', test: name, rules: [] }, { op: 'clash.run', test: name });
+	assert.deepEqual(rows(await nw.call('read', { what: 'clashes', test: name })).map(pairOf).sort(), hardDuctsWalls);
+	await apply({ op: 'clash.update', test: name, rules: sameComposite }, { op: 'clash.run', test: name });
+	assert.equal(total(await nw.call('read', { what: 'clashes', test: name, status: 'new,active' })), hardDuctsWalls.length);
+	await apply({ op: 'clash.update', test: name, tol: 1 });
+	assert.equal((await testRow(name))!.rules, sameComposite, 'omitting rules preserves them');
+	const path = nw.path('rules.nwd').replaceAll('\\', '/');
+	await nw.call('script', { code: `nw.Doc.SaveFile("${path}"); nw.Doc.OpenFile("${path}"); return nw.Doc.FileName;` });
+	assert.equal((await testRow(name))!.rules, sameComposite);
+
+	await apply({ op: 'clash.update', test: name, rules: [sameFile] }, { op: 'clash.run', test: name });
+	assert.equal(total(await nw.call('read', { what: 'clashes', test: name, status: 'new,active' })), 0);
+	// Native reruns retain previously found pairs as resolved rather than deleting their history.
+	assert.equal(total(await nw.call('read', { what: 'clashes', test: name, status: 'resolved' })), hardDuctsWalls.length);
+});
+
+test('unknown rules fail before changing a test or creating its selection sets', async () => {
+	const before = await nw.call('read', { what: 'tests' });
+	const sets = await nw.call('read', { what: 'sets' });
+	for (const op of [
+		{ op: 'clash.add', name: 'Bad rules', a: '?Item.Type = IfcDuctSegment', b: '?Item.Type = IfcWall', rules: ['not a built-in'] },
+		{ op: 'clash.update', test: 'Rule coverage', rules: ['not a built-in'] },
+	]) {
+		const failed = await nw.callRaw('apply', { ops: [op] });
+		assert.equal(failed.isError, true);
+		assert.match(failed.text, /unknown or unavailable clash rule[\s\S]*next: use built-in rule names: .*Items in same file/);
+		assert.equal(await nw.call('read', { what: 'tests' }), before);
+		assert.equal(await nw.call('read', { what: 'sets' }), sets);
+	}
+});
