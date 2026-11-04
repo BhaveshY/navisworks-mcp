@@ -212,6 +212,33 @@ test('F1 cached property aggregates invalidate after edits and undo', async () =
  assert.match(await call('read', { what: 'values', prop: 'F1.Cached' }), /before\|1/);
 });
 
+test('F1 abandoned completed jobs are bounded and never reported as running', async () => {
+ const block = nw.callRaw('script', { code: 'System.Threading.Thread.Sleep(30000); return "done";' });
+ await new Promise(resolve => setTimeout(resolve, 300));
+ const pending = Array.from({ length: 40 }, () => nw.callRaw('read', { what: 'items', in: 'all' }));
+ await Promise.all([block, ...pending]);
+ await new Promise(resolve => setTimeout(resolve, 5500));
+ const status = await call('status');
+ assert.doesNotMatch(status, /^jobs:/m);
+ const retained = /completed results awaiting collection: (\d+)/.exec(status);
+ assert.ok(retained, status);
+ assert.ok(Number(retained[1]) <= 32, status);
+});
+
+test('F1 status stays responsive during scripts and cancellation is cooperative', async () => {
+ const code = 'for (int i=0; i<600 && !nw.Cancelled; i++) System.Threading.Thread.Sleep(100); return nw.Cancelled ? "cancel observed" : "finished";';
+ await call('script', { code, check: true });
+ const running = call('script', { code });
+ await new Promise(resolve => setTimeout(resolve, 300));
+ const begin = performance.now();
+ const status = await call('status');
+ assert.ok(performance.now() - begin < 1000, status);
+ const id = /\b(j[\w.-]+) script/.exec(status)![1]!;
+ await nw.callRaw('job', { id, cancel: true, wait: 1000 });
+ assert.match(await running, /cancel observed|cancelled/);
+ assert.doesNotMatch(await call('status'), new RegExp(id + ' script'));
+});
+
 test('F1 handles from a closed process never address new results', async () => {
  const old = firstHandle;
  await nw.close();

@@ -22,14 +22,21 @@ namespace NavisworksMcp
 
         static void Status(Ctx c, Args a, Out o)
         {
-            var d = c.Doc;
-            o.Line($"navisworks pid {c.Host.Pid} · {Application.Version.RuntimeProductName} {Process.GetCurrentProcess().MainModule.FileVersionInfo.FileVersion} · core {Path.GetFileName(c.Host.CorePath)}");
-            if (d.IsClear) { o.Line("no document open. next: apply {ops:[{op:\"open\", path:\"C:/path/model.nwd\"}]}"); return; }
+            o.Line(c.Host.StatusSnapshot);
+            var jobs = c.Host.RunningJobs();
+            if (jobs.Length > 0) o.Line("jobs: " + string.Join(", ", jobs.Select(j => $"{j.Id} {j.Label} {j.Clock.Elapsed.TotalSeconds:0}s")) + " (document summary is the last UI snapshot)");
+            if (c.Host.CompletedJobs > 0) o.Line($"completed results awaiting collection: {c.Host.CompletedJobs} (at most 32, expire after two minutes)");
+        }
+
+        public static string Snapshot(Host host, Document d)
+        {
+            var o = new Out();
+            o.Line($"navisworks pid {host.Pid} · {Application.Version.RuntimeProductName} {Process.GetCurrentProcess().MainModule.FileVersionInfo.FileVersion} · core {Path.GetFileName(host.CorePath)}");
+            if (d == null || d.IsClear) return o.Line("no document open. next: apply {ops:[{op:\"open\", path:\"C:/path/model.nwd\"}]}").ToReply().Text;
             var file = string.IsNullOrEmpty(d.FileName) ? d.Title : d.FileName;
             o.Line($"doc {file} · units mm (document {d.Units}) · selection {d.CurrentSelection.SelectedItems.Count} · viewpoints {d.SavedViewpoints.RootItem.Children.Count} · sets {d.SelectionSets.RootItem.Children.Count}");
             o.Table(new[] { "#", "model", "units", "source" }, d.Models.Select((m, i) => new object[] { i, m.RootItem.DisplayName, m.Units, m.SourceFileName ?? m.FileName }));
-            var jobs = c.Host.RunningJobs().Where(j => j != c.Job).ToArray();
-            if (jobs.Length > 0) o.Line("jobs: " + string.Join(", ", jobs.Select(j => $"{j.Id} {j.Label} {j.Clock.Elapsed.TotalSeconds:0}s")));
+            return o.ToReply().Text;
         }
 
         static void Help(Ctx c, Args a, Out o)

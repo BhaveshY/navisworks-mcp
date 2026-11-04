@@ -7,7 +7,7 @@ const instructions = `Navisworks Manage. Start with status. Lengths mm, areas m2
 read never changes anything; lists return a handle r#. Pass items:"r3", "r3#5", "r3#0-9", "selection", "last", "set:Folder/Name", "id:0:0/2/1" or "?Item.Type = IfcWall" instead of copying rows. Totals are exact for the returned set. Searches return topmost matching items by default; descendants:true includes nested matches.
 Batch compatible changes in ONE apply call; open, append, merge, model.remove, refresh, tl.simulate, undo and redo must each run alone (see help): validated first, one undo step, preview:true plans only, "$0" is the handle made by op 0.
 export writes files. Long work returns a job j#: call job, and never repeat a write that is still running.
-Every error ends with next: do exactly that. help {tool, op} shows an example. script runs C# for anything else.`;
+Every error ends with next: do exactly that. help {tool, op} shows an example. script runs C# for anything else; loops must check nw.Cancelled or nw.CheckCancelled(). Cancellation cannot interrupt a blocked native call.`;
 
 const statusOnly: Catalog = {
 	tools: [{ name: 'status', description: 'Instance, document, models, units, selection and running jobs. Call first.', inputSchema: { type: 'object', properties: {} }, readOnly: true }],

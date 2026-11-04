@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -24,7 +25,8 @@ namespace NavisworksMcp
         public string Id;
         public string Label;
         public readonly Stopwatch Clock = Stopwatch.StartNew();
-        public readonly ManualResetEventSlim Done = new ManualResetEventSlim();
+        public readonly TaskCompletionSource<Reply> Done = new TaskCompletionSource<Reply>(TaskCreationOptions.RunContinuationsAsynchronously);
+        public long CompletedAt;
         public Reply Reply;
         public volatile bool Cancelled;
     }
@@ -37,12 +39,15 @@ namespace NavisworksMcp
         public readonly string Epoch = Guid.NewGuid().ToString("N").Substring(0, 8);
         public readonly string CorePath;
         public readonly Handles Handles = new Handles();
-        public readonly ReadCache Reads = new ReadCache();
         readonly Control ui = new Control();
         readonly ConcurrentDictionary<string, Job> jobs = new ConcurrentDictionary<string, Job>();
         readonly CancellationTokenSource stopping = new CancellationTokenSource();
         readonly string instanceFile;
         int jobSeq;
+        readonly System.Threading.Timer reaper;
+        readonly System.Windows.Forms.Timer snapshotTimer;
+        public volatile string StatusSnapshot = "Navisworks is starting; document summary not yet available";
+        public readonly ReadCache Reads = new ReadCache();
 
         public Host(string corePath)
         {
@@ -50,6 +55,11 @@ namespace NavisworksMcp
             ui.CreateControl();
             Watch(Autodesk.Navisworks.Api.Application.ActiveDocument);
             Autodesk.Navisworks.Api.Application.ActiveDocumentChanged += (s, e) => Watch(Autodesk.Navisworks.Api.Application.ActiveDocument);
+            snapshotTimer = new System.Windows.Forms.Timer { Interval = 250 };
+            snapshotTimer.Tick += (s, e) => CaptureStatus();
+            snapshotTimer.Start();
+            CaptureStatus();
+            reaper = new System.Threading.Timer(_ => PruneJobs(), null, 1000, 1000);
             Directory.CreateDirectory(Path.Combine(Dir, "instances"));
             new Thread(Listen) { IsBackground = true, Name = "navisworks-mcp" }.Start();
             // The catalog file only lets the server list tools before it connects; every hello carries the catalog,
@@ -77,6 +87,22 @@ namespace NavisworksMcp
         }
 
         void InvalidateModels() { Handles.Invalidate(); Reads.Clear(); }
+
+        void CaptureStatus()
+        {
+            try { StatusSnapshot = StatusOps.Snapshot(this, Autodesk.Navisworks.Api.Application.ActiveDocument); }
+            catch (Exception) { /* A closing/loading document may not have a readable summary yet. */ }
+        }
+
+        void PruneJobs()
+        {
+            var completed = jobs.Values.Where(j => j.Done.Task.IsCompleted).OrderByDescending(j => j.CompletedAt).ToArray();
+            for (var i = 0; i < completed.Length; i++)
+                if (i >= 32 || DateTime.UtcNow.Ticks - completed[i].CompletedAt > TimeSpan.FromMinutes(2).Ticks)
+                    jobs.TryRemove(completed[i].Id, out _);
+        }
+
+        public int CompletedJobs => jobs.Values.Count(j => j.Done.Task.IsCompleted);
 
         static void WriteAtomic(string path, string text, bool required)
         {
@@ -180,9 +206,9 @@ namespace NavisworksMcp
                 }
                 var tool = (string)msg["tool"];
                 var args = msg["args"] as JObject ?? new JObject();
-                var wait = msg["wait"]?.Type == JTokenType.Integer ? (int)msg["wait"] : 25000;
+                var wait = msg["wait"]?.Type == JTokenType.Integer && int.TryParse(msg["wait"].ToString(), out var requested) ? Math.Max(0, Math.Min(120000, requested)) : 25000;
                 // Registered before any work is scheduled, so a cancel that follows right behind still finds it.
-                var job = Catalog.RunsOnPipeThread(tool) ? null : new Job { Id = "j" + Interlocked.Increment(ref jobSeq), Label = tool };
+                var job = Catalog.RunsOnPipeThread(tool) ? null : new Job { Id = "j" + Epoch + "-" + Interlocked.Increment(ref jobSeq), Label = tool };
                 if (job != null) byRequest[id] = job;
                 Task.Run(() =>
                 {
@@ -201,7 +227,10 @@ namespace NavisworksMcp
                 ui.BeginInvoke(new Action(() =>
                 {
                     job.Reply = job.Cancelled ? Reply.Error("cancelled", "the call was cancelled before it started", "repeat the call if you still need it") : Catalog.Run(new Ctx(this, job), tool, args);
-                    job.Done.Set();
+                    CaptureStatus();
+                    job.CompletedAt = DateTime.UtcNow.Ticks;
+                    job.Done.TrySetResult(job.Reply);
+                    PruneJobs();
                 }));
             }
             catch (Exception e) when (e is InvalidOperationException || e is ObjectDisposedException)
@@ -209,7 +238,7 @@ namespace NavisworksMcp
                 jobs.TryRemove(job.Id, out _);
                 return Reply.Error("closing", "Navisworks is shutting down", "start Navisworks again, then call status");
             }
-            if (job.Done.Wait(waitMs)) { jobs.TryRemove(job.Id, out _); return job.Reply; }
+            if (job.Done.Task.Wait(waitMs)) { jobs.TryRemove(job.Id, out _); return job.Reply; }
             return Reply.Running(job);
         }
 
@@ -217,18 +246,20 @@ namespace NavisworksMcp
         public Reply Await(string id, int waitMs, bool cancel)
         {
             if (!jobs.TryGetValue(id, out var job))
-                return Reply.Error("not_found", "no running job " + id + " (finished jobs are reported once)", "call status to see running jobs");
+                return Reply.Error("not_found", "no job " + id + " (completed results are collected once, retained for two minutes, at most 32)", "call status to inspect current work; check application state before repeating a write");
             if (cancel) job.Cancelled = true;
-            if (!job.Done.Wait(waitMs)) return Reply.Running(job);
+            if (!job.Done.Task.Wait(waitMs)) return Reply.Running(job);
             jobs.TryRemove(id, out _);
             return job.Reply;
         }
 
-        public Job[] RunningJobs() => new System.Collections.Generic.List<Job>(jobs.Values).ToArray();
+        public Job[] RunningJobs() => jobs.Values.Where(j => !j.Done.Task.IsCompleted).ToArray();
 
         public void Dispose()
         {
             stopping.Cancel();
+            reaper.Dispose();
+            snapshotTimer.Dispose();
             try { File.Delete(instanceFile); } catch (IOException) { }
         }
     }

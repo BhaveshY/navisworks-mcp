@@ -49,7 +49,7 @@ namespace NavisworksMcp
         public static Reply Running(Job job) => new Reply
         {
             JobId = job.Id,
-            Text = $"{job.Id} running {job.Label} for {job.Clock.Elapsed.TotalSeconds:0}s\nnext: job {{id:\"{job.Id}\", wait:60000}}. Do not repeat the call.",
+            Text = $"{job.Id} running {job.Label} for {job.Clock.Elapsed.TotalSeconds:0}s" + (job.Cancelled ? "; cancellation requested (cooperative; a blocked native call cannot be interrupted)" : "") + $"\nnext: job {{id:\"{job.Id}\", wait:60000}}. Do not repeat the call.",
         };
 
         public JObject ToWire(long id)

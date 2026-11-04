@@ -71,7 +71,7 @@ namespace NavisworksMcp
 
         public static readonly JObject Json = Build();
 
-        public static bool RunsOnPipeThread(string tool) => tool == "job" || tool == "help";
+        public static bool RunsOnPipeThread(string tool) => tool == "job" || tool == "help" || tool == "status";
 
         static JObject Build()
         {

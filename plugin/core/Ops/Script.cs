@@ -19,6 +19,8 @@ namespace NavisworksMcp
         readonly Ctx c;
         internal Nw(Ctx c) { this.c = c; }
         public Document Doc => c.Doc;
+        public bool Cancelled => c.Job != null && c.Job.Cancelled;
+        public void CheckCancelled() => c.CheckCancelled();
         public readonly StringBuilder Out = new StringBuilder();
         public ModelItemCollection Items(string target) => Target.Parse(c, target).Items(c);
         public string Handle(IEnumerable<ModelItem> items) => c.Keep(new Handle { Kind = Kind.Items, Rows = items.Cast<object>().ToList(), Label = "script" }).Name;
@@ -33,7 +35,7 @@ namespace NavisworksMcp
         public static readonly Op[] All =
         {
             Catalog.Read("script", "script", "code:str; check:bool=false", Run,
-                "C# 5 method body; return a value or write to nw.Out. Runs as one undo step. check:true only compiles",
+                "C# 5 method body; return a value or write to nw.Out. Runs as one undo step. check:true only compiles. Loops must check nw.Cancelled or call nw.CheckCancelled(); cancellation is cooperative and cannot interrupt a blocked native call",
                 "{code:\"var walls = nw.Items(\\\"?Item.Type = IfcWall\\\"); return nw.Handle(walls.Where(w => nw.Mm(w.BoundingBox().Size.Z) > 2900));\"}"),
         };
 
@@ -70,6 +72,7 @@ namespace NavisworksMcp
                 catch (TargetInvocationException e)
                 {
                     var inner = e.InnerException;
+                    if (inner is NwError error) throw error;
                     throw new NwError("script", $"{inner.GetType().Name}: {inner.Message}\n{inner.StackTrace?.Split('\n').FirstOrDefault(l => l.Contains("McpScript"))?.Trim()}", "fix the code and run it again; changes made before the error stay applied unless you undo");
                 }
                 tx.Commit();
