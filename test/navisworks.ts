@@ -127,7 +127,9 @@ export async function startSession({ ifcConversion = 'v3' }: { ifcConversion?: '
 				const timeout = setTimeout(() => resolve(false), 30000);
 				roamer.once('exit', () => { clearTimeout(timeout); resolve(true); });
 			});
-			await callRaw('script', { code: 'nw.Doc.Clear(); System.Diagnostics.Process.GetCurrentProcess().CloseMainWindow(); return "closing";' }).catch(() => {});
+			// Process.MainWindowHandle can select Navisworks' unowned "Working..." window. Use the application's exact window,
+			// and queue Close so the script's transaction finishes before the application shuts down.
+			await callRaw('script', { code: 'nw.Doc.Clear(); var main = (System.Windows.Forms.Form)System.Windows.Forms.Control.FromHandle(Autodesk.Navisworks.Api.Application.Gui.MainWindow.Handle); main.BeginInvoke(new System.Action(main.Close)); return "closing";' }).catch(() => {});
 			await client.close();
 			const clean = await exited;
 			if (!clean) roamer.kill();
