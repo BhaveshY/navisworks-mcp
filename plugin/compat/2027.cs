@@ -8,6 +8,7 @@ namespace NavisworksMcp
     static class Compat
     {
         public static void PublishNwd(Document doc, string path, PublishProperties props) => doc.PublishFile(path, new NwdExportOptions(), props);
+        public static void CopyClip(Viewpoint target, Viewpoint source) => target.ClipPlanes.CopyFrom(source.ClipPlanes);
 
         public static string Clip(Viewpoint vp)
         {

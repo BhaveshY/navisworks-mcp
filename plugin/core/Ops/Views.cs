@@ -173,15 +173,16 @@ namespace NavisworksMcp
                 var vps = c.Doc.SavedViewpoints;
                 var folder = Sets.Folder(() => vps.RootItem, name, vps.AddCopy);
                 var leaf = Sets.Leaf(name);
-                // CaptureRuntimeOverrides holds the hide and colour overrides but no camera; ReplaceFromCurrentView adds camera and section.
+                // Assemble the final value before recording one native edit. ReplaceFromCurrentView drops an
+                // explicitly empty visibility override from its redo record (an all-visible view becomes camera-only).
                 var vp = vps.CaptureRuntimeOverrides();
+                vp.Viewpoint.InternalViewpoint.CopyFrom(c.Doc.CurrentViewpoint.ToViewpoint().InternalViewpoint);
+                Compat.CopyClip(vp.Viewpoint, c.Doc.CurrentViewpoint.ToViewpoint());
                 vp.DisplayName = leaf;
                 var existing = folder.Children.FirstOrDefault(x => x.DisplayName == leaf);
                 if (existing != null) vps.ReplaceWithCopy(folder, folder.Children.IndexOf(existing), vp);
                 else vps.AddCopy(folder, vp);
-                var saved = (SavedViewpoint)folder.Children.First(x => x.DisplayName == leaf);
-                vps.ReplaceFromCurrentView(saved);
-                saved = Views.Find(c.Doc, name);
+                var saved = Views.Find(c.Doc, name);
                 return $"{(existing != null ? "replaced" : "saved")} viewpoint \"{name}\" (section {Compat.Clip(saved.Viewpoint)}, overrides {(saved.ContainsVisibilityOverrides || saved.ContainsAppearanceOverrides ? "kept" : "none")})";
             });
         }
