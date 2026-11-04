@@ -27,7 +27,7 @@ namespace NavisworksMcp
                 "children of a node (default: model roots) with descendant counts", "{under:\"r2#0\", depth:2}"),
             Catalog.Read("read", "values", "prop:str; in:target where:where top:int=30 offset:int=0", Values,
                 "distinct values of one property with counts", "{prop:\"Item.Type\"}"),
-            Catalog.Read("read", "stats", "", Stats, "model totals: items, geometry items, extents, most common types", "{}"),
+            Catalog.Read("read", "stats", "", Stats, "model totals: items, geometry items and extents per model; type counts come from values Item.Type", "{}"),
             Catalog.Read("read", "page", "in:target; offset:int=0", TextPage, "continue a large text result using its more: call", "{in:\"last\", offset:1}"),
         };
 
@@ -222,16 +222,26 @@ namespace NavisworksMcp
             if (c.Host.Reads.Text.TryGetValue("stats", out var cached)) { o.Line(cached); return; }
             var d = c.Doc;
             var output = new Out();
+            // Native searches count in milliseconds; walking items through interop took seconds on large models.
             for (var i = 0; i < d.Models.Count; i++)
             {
                 var root = d.Models[i].RootItem;
-                var all = root.DescendantsAndSelf.ToList();
-                var geometry = all.Count(x => x.HasGeometry);
-                output.Line($"model {i} {root.DisplayName}: {all.Count:#,0} items, {geometry:#,0} with geometry, extents {Units.Box(d, root.BoundingBox())} mm");
-                var types = all.Where(x => x.HasGeometry).GroupBy(x => x.ClassDisplayName).OrderByDescending(g => g.Count()).Take(15);
-                output.Line("  geometry by type: " + string.Join(" · ", types.Select(g => $"{g.Key} {g.Count():#,0}")));
+                var items = Count(d, root, "LcOaNode");
+                var geometry = Count(d, root, "LcOpGeometryProperty");
+                output.Line($"model {i} {root.DisplayName}: {items:#,0} items, {geometry:#,0} with geometry, extents {Units.Box(d, root.BoundingBox())} mm");
             }
+            output.Line("types: read {what:\"values\", prop:\"Item.Type\"}");
             o.Line(c.Host.Reads.Text["stats"] = output.Text);
+        }
+
+        /// Items under root, inclusive, that carry a property category, by its internal name: every item has LcOaNode,
+        /// every item with geometry has LcOpGeometryProperty.
+        static int Count(Document d, ModelItem root, string category)
+        {
+            var s = new Search { Locations = SearchLocations.DescendantsAndSelf, PruneBelowMatch = false };
+            s.Selection.CopyFrom(new ModelItemCollection { root });
+            s.SearchConditions.Add(SearchCondition.HasCategoryByName(category));
+            return s.FindAll(d, false).Count;
         }
     }
 }

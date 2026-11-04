@@ -237,3 +237,12 @@ test('quantities keep their decimals', async () => {
 	assert.match(text, /Area=1,840\.25/);
 	assert.match(text, /Big=3,000,000,000/);
 });
+
+test('stats counts every item and every geometry item, as an independent walk does', async () => {
+	const text = await nw.call('read', { what: 'stats' });
+	const [, items, geometry] = /^model 0 [^:]*: ([\d,]+) items, ([\d,]+) with geometry/m.exec(text)!;
+	assert.equal(Number(geometry!.replace(/,/g, '')), boxes.length);
+	const walked = await nw.call('script', { code: 'return nw.Doc.Models[0].RootItem.DescendantsAndSelf.Count().ToString();' });
+	assert.equal(Number(items!.replace(/,/g, '')), Number(walked.trim()));
+	assert.match(text, /^types: read \{what:"values", prop:"Item\.Type"\}$/m);
+});
