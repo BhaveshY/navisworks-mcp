@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Autodesk.Navisworks.Api;
 using Autodesk.Navisworks.Api.Data;
@@ -16,6 +17,8 @@ namespace NavisworksMcp
     {
         public string Level, By, Kind, Path, Model, Wbs;
         public long Id;
+        public long Identity, Parent;
+        public Guid ModelGuid;
         public int Takeoffs;
         public double? Count, Length, Area, Volume;
     }
@@ -43,6 +46,31 @@ namespace NavisworksMcp
         };
 
         static DocumentTakeoff Tk(Ctx c) => c.Doc.GetTakeoff();
+
+        // SQLite IDs are reused. Observe native database changes (including scripts and undo),
+        // so even deleting and recreating the same item cannot give an old handle new authority.
+        sealed class Identities
+        {
+            readonly Dictionary<long, long> tokens = new Dictionary<long, long>();
+            long sequence;
+            public Identities(DocumentTakeoff tk)
+            {
+                tk.Database.Changed += (sender, e) =>
+                {
+                    if (e.Action == DatabaseChangedAction.Reset) tokens.Clear();
+                    else foreach (var change in e.Changes)
+                        if (change.TableName == "TK_Object") tokens.Remove(change.RowId);
+                };
+                tk.Database.Unloading += (sender, e) => tokens.Clear();
+            }
+            public long Token(long id)
+            {
+                if (!tokens.TryGetValue(id, out var token)) tokens[id] = token = ++sequence;
+                return token;
+            }
+        }
+        static readonly ConditionalWeakTable<DocumentTakeoff, Identities> identities = new ConditionalWeakTable<DocumentTakeoff, Identities>();
+        static Identities Identity(DocumentTakeoff tk) => identities.GetValue(tk, x => new Identities(x));
 
         static bool IsSetUp(DocumentTakeoff tk) => DocumentTakeoffExtensions.GetHasSetUp(tk);
 
@@ -258,7 +286,7 @@ namespace NavisworksMcp
             var models = needModel ? ByGuid(c.Doc, new HashSet<Guid>(objects.Select(t => t.Guid))) : new Dictionary<Guid, ModelItem>();
             var rows = objects.Select(t =>
             {
-                var row = new QtoRow { Level = "takeoffs", Id = t.Id, Path = items[t.Item].Path, Model = models.TryGetValue(t.Guid, out var mi) ? mi.DisplayName : "-", Takeoffs = 1 };
+                var row = new QtoRow { Level = "takeoffs", Id = t.Id, Parent = t.Item, ModelGuid = t.Guid, Identity = Identity(tk).Token(t.Id), Path = items[t.Item].Path, Model = models.TryGetValue(t.Guid, out var mi) ? mi.DisplayName : "-", Takeoffs = 1 };
                 Fill(tk.Objects, t.Id, row);
                 return (t, row, mi);
             }).ToList();
@@ -458,7 +486,8 @@ namespace NavisworksMcp
                     }
                     tr.Commit();
                 }
-                var rows = made.Select(id => { var r = new QtoRow { Level = "takeoffs", Id = id, Path = path }; Fill(tk.Objects, id, r); return (object)r; }).ToList();
+                var taken = Takeoffs(tk).ToDictionary(t => t.Id);
+                var rows = made.Select(id => { var r = new QtoRow { Level = "takeoffs", Id = id, Parent = item.Id, ModelGuid = taken[id].Guid, Identity = Identity(tk).Token(id), Path = path }; Fill(tk.Objects, id, r); return (object)r; }).ToList();
                 var h = c.Keep(new Handle { Kind = Kind.Takeoff, Rows = rows, Label = "qto.takeoff" });
                 var text = $"took off {made.Count:#,0} items into \"{path}\" -> {h.Name}; {modelValues:#,0} had quantities from model properties";
                 if (skipped > 0) text += $"; {skipped:#,0} were already in it";
@@ -475,6 +504,7 @@ namespace NavisworksMcp
             if (a.Has("name") == a.Has("takeoffs")) throw new NwError("bad_args", "qto.delete needs name or takeoffs, not both", "pass name:\"Group/Item\" or takeoffs:\"r5#0-3\"");
             if (!IsSetUp(tk)) throw new NwError("not_found", "Quantification is not set up in this document", "nothing to delete");
             List<long> objects, items, groups;
+            List<QtoRow> selected = null;
             string what;
             if (a.Has("takeoffs"))
             {
@@ -482,6 +512,8 @@ namespace NavisworksMcp
                 var rows = t.Rows(c).Select(r => r as QtoRow).ToList();
                 if (rows.Any(r => r == null || r.Level != "takeoffs")) throw new NwError("bad_args", $"{t.Text} does not hold takeoff rows", "pass a handle from read {what:\"qto\", level:\"takeoffs\"} or from qto.takeoff");
                 objects = rows.Select(r => r.Id).Distinct().ToList();
+                selected = rows;
+                VerifyIdentity(tk, selected);
                 items = new List<long>();
                 groups = new List<long>();
                 what = $"{objects.Count:#,0} takeoffs";
@@ -498,6 +530,8 @@ namespace NavisworksMcp
             }
             return new Step("delete " + what, () =>
             {
+                // Recheck immediately before mutation as well as while planning the operation.
+                if (selected != null) VerifyIdentity(tk, selected);
                 string In(List<long> ids) => "(" + string.Join(",", ids.Select(i => i.ToString(CultureInfo.InvariantCulture))) + ")";
                 using (var tr = tk.Database.BeginTransaction(DatabaseChangedAction.Edited))
                 {
@@ -518,6 +552,14 @@ namespace NavisworksMcp
                 }
                 return "deleted " + what;
             });
+        }
+
+        static void VerifyIdentity(DocumentTakeoff tk, List<QtoRow> rows)
+        {
+            var current = Takeoffs(tk).ToDictionary(t => t.Id);
+            var identity = Identity(tk);
+            if (rows.Any(r => r.Identity != identity.Token(r.Id) || !current.TryGetValue(r.Id, out var t) || t.Item != r.Parent || t.Guid != r.ModelGuid))
+                throw new NwError("stale_handle", "the selected takeoffs changed or were deleted since this handle was made", "read {what:\"qto\", level:\"takeoffs\"} and use the new handle");
         }
 
         /// Six significant digits: the database stores single-precision floats, so more digits are noise.
