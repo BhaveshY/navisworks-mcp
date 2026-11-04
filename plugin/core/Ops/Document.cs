@@ -64,7 +64,9 @@ namespace NavisworksMcp
         void Reporting(object sender, ProgressErrorReportingEventArgs e) { if (error == null) error = e.Message; e.Canceled = true; e.Handled = true; }
         public void Check(bool success, string path, bool writing = false)
         {
-            if (missing != null) throw new NwError("not_found", "unresolved model reference: " + missing, "restore the missing referenced model at its original path, then open the federation again");
+            if (missing != null)
+                throw new NwError("not_found", missing.Length > 0 ? "unresolved model reference: " + missing : $"\"{path}\" references a file that is missing (Navisworks did not name it)",
+                    "copy every file the federation references (models and sheets such as .nwc, .dwfx) next to it or to their original paths, then open it again");
             if (!success || error != null) throw new NwError("bad_args", $"cannot {(writing ? "write" : "load")} \"{path}\"" + (error == null ? "" : ": " + error),
                 writing ? "choose a new writable output path with the correct extension" : "use a supported, readable model with all referenced files present");
         }
@@ -81,7 +83,7 @@ namespace NavisworksMcp
     {
         public static readonly Op[] All =
         {
-            Anywhere(Catalog.Apply("open", "path:path", Open, "open a model (nwd, nwf, nwc, ifc, rvt...), replacing the current document; unsaved changes are lost", "{path:\"C:/Coord/Federated.nwf\"}").Alone()),
+            Catalog.Apply("open", "path:path", Open, "open a model (nwd, nwf, nwc, ifc, rvt...), replacing the current document; unsaved changes are lost", "{path:\"C:/Coord/Federated.nwf\"}").Alone().Anywhere(),
             Catalog.Apply("append", "paths:strs", (c, a) => Combine(c, a, false), "append models to the document", "{paths:[\"C:/Coord/MEP.nwc\", \"C:/Coord/STR.nwc\"]}").Alone(),
             Catalog.Apply("merge", "paths:strs", (c, a) => Combine(c, a, true), "merge models into the document, dropping duplicates (for NWFs that share models)", "{paths:\"C:/Coord/Level2.nwf\"}").Alone(),
             Catalog.Apply("refresh", "", Refresh, "reload models whose files changed on disk", "{}").Alone(),
@@ -92,7 +94,6 @@ namespace NavisworksMcp
                 "one row per item: id, name, type, then cols (Tab.Prop, bbox, path, hidden, color, transparency)", "{items:\"r1\", cols:\"Pset_Fixture.FireRating,bbox\", path:\"C:/Coord/walls.csv\"}"),
         };
 
-        static Op Anywhere(Op op) { op.NeedsDocument = false; return op; }
 
         static string Existing(string path)
         {

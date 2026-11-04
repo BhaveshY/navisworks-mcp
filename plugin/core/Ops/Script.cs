@@ -36,7 +36,7 @@ namespace NavisworksMcp
         {
             Catalog.Read("script", "script", "code:str; check:bool=false", Run,
                 "C# 5 method body; return a value or write to nw.Out. Runs as one undo step. check:true only compiles. Loops must check nw.Cancelled or call nw.CheckCancelled(); cancellation is cooperative and cannot interrupt a blocked native call",
-                "{code:\"var walls = nw.Items(\\\"?Item.Type = IfcWall\\\"); return nw.Handle(walls.Where(w => nw.Mm(w.BoundingBox().Size.Z) > 2900));\"}"),
+                "{code:\"var walls = nw.Items(\\\"?Item.Type = IfcWall\\\"); return nw.Handle(walls.Where(w => nw.Mm(w.BoundingBox().Size.Z) > 2900));\"}").Anywhere(),
         };
 
         static MethodInfo Compile(Ctx c, string code)

@@ -36,6 +36,8 @@ namespace NavisworksMcp
         public bool Standalone;
         /// Marks an op that must be the only op in its apply call and runs outside a transaction (undo, open, save).
         public Op Alone() { Standalone = true; return this; }
+        /// Marks an op that also runs with no model open (open, script).
+        public Op Anywhere() { NeedsDocument = false; return this; }
         public string Line => (Tool == Name ? "" : Name + " ") + Signature.Trim() + " : " + Doc + (Standalone ? "; must be the only op in its apply call" : "");
     }
 

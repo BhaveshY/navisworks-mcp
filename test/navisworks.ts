@@ -129,13 +129,14 @@ export async function startSession({ ifcConversion = 'v3' }: { ifcConversion?: '
 			});
 			// Process.MainWindowHandle can select Navisworks' unowned "Working..." window. Use the application's exact window,
 			// and queue Close so the script's transaction finishes before the application shuts down.
-			await callRaw('script', { code: 'nw.Doc.Clear(); var main = (System.Windows.Forms.Form)System.Windows.Forms.Control.FromHandle(Autodesk.Navisworks.Api.Application.Gui.MainWindow.Handle); main.BeginInvoke(new System.Action(main.Close)); return "closing";' }).catch(() => {});
+			const request = await callRaw('script', { code: 'nw.Doc.Clear(); var main = (System.Windows.Forms.Form)System.Windows.Forms.Control.FromHandle(Autodesk.Navisworks.Api.Application.Gui.MainWindow.Handle); main.BeginInvoke(new System.Action(main.Close)); return "closing";' })
+				.then((r) => (r.isError ? r.text : ''), (e: Error) => e.message);
 			await client.close();
 			const clean = await exited;
 			if (!clean) roamer.kill();
 			for (const f of existsSync(autoSaveDir) ? readdirSync(autoSaveDir) : []) if (f.startsWith(`${tag}-`)) rmSync(join(autoSaveDir, f), { force: true });
 			clearAutoRecover(dir);
-			if (!clean) throw new Error(`Navisworks pid ${pid} did not exit within 30 s of WM_CLOSE and was killed; the next launch will ask to reload`);
+			if (!clean) throw new Error(`Navisworks pid ${pid} did not exit within 30 s of WM_CLOSE and was killed` + (request ? `; the close request failed: ${request}` : ''));
 		},
 	};
 }
