@@ -209,9 +209,9 @@ namespace NavisworksMcp
                     case "~": sc = sc.DisplayStringContains(cond.Value).IgnoreStringValueCase(); break;
                     case "~=": sc = sc.DisplayStringWildcard(cond.Value).IgnoreStringValueCase(); break;
                     default:
-                        var sample = Sample(c.Doc, cond.Tab, cond.Prop);
+                        var sample = Sample(c.Doc, cond.Tab, cond.Prop, out var legacyScale);
                         if (sample == null) { missing?.Add(cond.Tab + "." + cond.Prop); sc = sc.EqualValue(VariantData.FromDisplayString(cond.Value)); break; }
-                        var value = Typed(c.Doc, sample, cond.Value);
+                        var value = Typed(c.Doc, sample, cond.Value, legacyScale);
                         sc = cond.Op == "=" ? sc.EqualValue(value)
                             : cond.Op == "!=" ? sc.CompareWith(SearchConditionComparison.NotEqual, value)
                             : sc.CompareWith(cond.Op == ">" ? SearchConditionComparison.NumericGreaterThan : cond.Op == ">=" ? SearchConditionComparison.NumericGreaterThanOrEqual : cond.Op == "<" ? SearchConditionComparison.NumericLessThan : SearchConditionComparison.NumericLessThanOrEqual, value);
@@ -224,15 +224,18 @@ namespace NavisworksMcp
             return s;
         }
 
-        static DataProperty Sample(Document doc, string tab, string prop)
+        static DataProperty Sample(Document doc, string tab, string prop, out double legacyScale)
         {
             var s = new Search { Locations = SearchLocations.DescendantsAndSelf };
             s.Selection.SelectAll();
             s.SearchConditions.Add(SearchCondition.HasPropertyByDisplayName(tab, prop));
-            return s.FindFirst(doc, false)?.PropertyCategories.FindPropertyByDisplayName(tab, prop);
+            var item = s.FindFirst(doc, false);
+            var property = item?.PropertyCategories.FindPropertyByDisplayName(tab, prop);
+            legacyScale = Units.LegacyScale(property, item, tab);
+            return property;
         }
 
-        static VariantData Typed(Document doc, DataProperty sample, string text)
+        static VariantData Typed(Document doc, DataProperty sample, string text, double legacyScale)
         {
             var v = sample.Value;
             if (double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n))
@@ -242,7 +245,7 @@ namespace NavisworksMcp
                 if (v.IsDoubleVolume) return VariantData.FromDoubleVolume(n / Math.Pow(Units.Meters(doc), 3));
                 if (v.IsDoubleAngle) return VariantData.FromDoubleAngle(n * Math.PI / 180);
                 if (v.IsInt32 && n == Math.Floor(n)) return VariantData.FromInt32((int)n);
-                if (v.IsDouble) return VariantData.FromDouble(n);
+                if (v.IsDouble) return VariantData.FromDouble(n / legacyScale);
             }
             if (v.IsBoolean && bool.TryParse(text, out var b)) return VariantData.FromBoolean(b);
             if (v.IsDisplayString) return VariantData.FromDisplayString(text);

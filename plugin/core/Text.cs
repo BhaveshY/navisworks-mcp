@@ -143,6 +143,43 @@ namespace NavisworksMcp
 
         public static string Box(Document doc, BoundingBox3D b) => b == null || b.IsEmpty ? "-" : Point(doc, b.Min) + " .. " + Point(doc, b.Max);
 
+        // Older Revit exporters stored these built-in physical fields as plain doubles in
+        // Revit's internal feet. Internal property names identify the exporter; a user-defined
+        // field named Length or Area is not evidence of a physical unit.
+        public static int LegacyDimension(DataProperty p, ModelItem item = null, string tab = null)
+        {
+            if (p == null || !p.Value.IsDouble) return 0;
+            var name = p.Name;
+            if (!name.StartsWith("revit_", StringComparison.Ordinal))
+            {
+                if (item == null || tab == null || !item.ClassName.StartsWith("LcRevit", StringComparison.Ordinal)
+                    || item.PropertyCategories.FindCategoryByDisplayName(tab)?.Name != "LcRevitData") return 0;
+                name = "revit_" + name;
+            }
+            switch (name)
+            {
+                case "revit_Length": case "revit_Width": case "revit_Height":
+                case "revit_Thickness": case "revit_Perimeter": return 1;
+                case "revit_Unconnected Height": case "revit_Top Offset": case "revit_Base Offset":
+                case "revit_Base Extension Distance": case "revit_Top Extension Distance":
+                case "revit_Height Offset From Level": case "revit_Elevation": return 1;
+                case "revit_Area": return 2;
+                case "revit_Volume": return 3;
+                default: return 0;
+            }
+        }
+        public static double LegacyScale(DataProperty p, ModelItem item = null, string tab = null)
+        {
+            var dimension = LegacyDimension(p, item, tab);
+            return dimension == 0 ? 1 : Math.Pow(0.3048, dimension) * (dimension == 1 ? 1000 : 1);
+        }
+        public static string Value(Document doc, DataProperty p, ModelItem item = null, string tab = null)
+        {
+            var dimension = LegacyDimension(p, item, tab);
+            return dimension == 0 ? Value(doc, p?.Value)
+                : Out.Num(p.Value.ToDouble() * LegacyScale(p, item, tab)) + (dimension == 1 ? " mm" : dimension == 2 ? " m2" : " m3");
+        }
+
         /// Property values keep Navisworks' own display text except lengths, areas and volumes, which are normalised to mm, m2 and m3.
         public static string Value(Document doc, VariantData v)
         {

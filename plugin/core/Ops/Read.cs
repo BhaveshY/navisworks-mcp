@@ -40,8 +40,8 @@ namespace NavisworksMcp
         {
             var dot = col.IndexOf('.');
             if (dot < 0) { var s = Column(doc, item, col); return (s, s); }
-            var v = item.PropertyCategories.FindPropertyByDisplayName(col.Substring(0, dot), col.Substring(dot + 1))?.Value;
-            return (Units.Key(v), Units.Value(doc, v));
+            var v = item.PropertyCategories.FindPropertyByDisplayName(col.Substring(0, dot), col.Substring(dot + 1));
+            return (Units.Key(v?.Value), Units.Value(doc, v, item, col.Substring(0, dot)));
         }
 
         /// Counts per exact key, most frequent first. Labels that two keys share get the exact value appended.
@@ -65,7 +65,7 @@ namespace NavisworksMcp
             }
             var dot = col.IndexOf('.');
             if (dot < 0) throw new NwError("bad_args", $"column \"{col}\" is not Tab.Prop, bbox, path, hidden, color or transparency", "write columns as Tab.Prop, e.g. Element.Category");
-            return Units.Value(doc, item.PropertyCategories.FindPropertyByDisplayName(col.Substring(0, dot), col.Substring(dot + 1))?.Value);
+            return Units.Value(doc, item.PropertyCategories.FindPropertyByDisplayName(col.Substring(0, dot), col.Substring(dot + 1)), item, col.Substring(0, dot));
         }
 
         static void Items(Ctx c, Args a, Out o)
@@ -90,7 +90,7 @@ namespace NavisworksMcp
             if (group != null)
             {
                 var counts = Tally(h.Rows.Cast<ModelItem>().Select(x => Exact(c.Doc, x, group))).Select(g => $"{g.label} {g.count:#,0}");
-                head += $" · by {group}: " + string.Join(" · ", counts);
+                head += $" Â· by {group}: " + string.Join(" Â· ", counts);
             }
             o.Line(head);
             if (h.Rows.Count == 0) return;
@@ -106,11 +106,11 @@ namespace NavisworksMcp
             var tabs = new HashSet<string>(a.List("tabs"), StringComparer.OrdinalIgnoreCase);
             foreach (var item in items.Take(a.Int("limit")))
             {
-                o.Line($"{Id(c.Doc, item)} {item.DisplayName} · {item.ClassDisplayName}");
+                o.Line($"{Id(c.Doc, item)} {item.DisplayName} Â· {item.ClassDisplayName}");
                 foreach (var cat in item.PropertyCategories)
                 {
                     if (tabs.Count > 0 && !tabs.Contains(cat.DisplayName)) continue;
-                    o.Line($"[{cat.DisplayName}] " + string.Join(" · ", cat.Properties.Select(p => p.DisplayName + "=" + Units.Value(c.Doc, p.Value))));
+                    o.Line($"[{cat.DisplayName}] " + string.Join(" Â· ", cat.Properties.Select(p => p.DisplayName + "=" + Units.Value(c.Doc, p, item, cat.DisplayName))));
                 }
             }
             if (items.Count > a.Int("limit")) o.Line($"{items.Count - a.Int("limit"):#,0} more items not shown; raise limit or narrow items");
@@ -149,7 +149,7 @@ namespace NavisworksMcp
             if (dot < 0) throw new NwError("bad_args", $"prop \"{prop}\" is not Tab.Prop", "e.g. Item.Type");
             var tab = prop.Substring(0, dot);
             var name = prop.Substring(dot + 1);
-            var found = items.Select(item => item.PropertyCategories.FindPropertyByDisplayName(tab, name)).Where(p => p != null).Select(p => (Units.Key(p.Value), Units.Value(c.Doc, p.Value))).ToList();
+            var found = items.Select(item => { var p = item.PropertyCategories.FindPropertyByDisplayName(tab, name); return (p, item); }).Where(x => x.p != null).Select(x => (Units.Key(x.p.Value), Units.Value(c.Doc, x.p, x.item, tab))).ToList();
             var top = Tally(found);
             o.Line($"values {prop}: {top.Count:#,0} distinct in {found.Count:#,0} items (exact)");
             o.Table(new[] { "value", "count" }, top.Take(a.Int("top")).Select(g => new object[] { g.label, g.count }));
@@ -166,7 +166,7 @@ namespace NavisworksMcp
                 var geometry = all.Count(x => x.HasGeometry);
                 o.Line($"model {i} {root.DisplayName}: {all.Count:#,0} items, {geometry:#,0} with geometry, extents {Units.Box(d, root.BoundingBox())} mm");
                 var types = all.Where(x => x.HasGeometry).GroupBy(x => x.ClassDisplayName).OrderByDescending(g => g.Count()).Take(15);
-                o.Line("  geometry by type: " + string.Join(" · ", types.Select(g => $"{g.Key} {g.Count():#,0}")));
+                o.Line("  geometry by type: " + string.Join(" Â· ", types.Select(g => $"{g.Key} {g.Count():#,0}")));
             }
         }
     }
