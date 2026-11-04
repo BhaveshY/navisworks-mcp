@@ -8,24 +8,32 @@ A plugin inside Navisworks runs every call on the Navisworks UI thread. A small 
 
 ## Install
 
-You need Navisworks Manage 2024 or 2027 (or both), Node 24 or later, and Visual Studio 2022 Build Tools, which provide `csc.exe`. You don't need a .NET SDK.
+An AI agent can install this: point it at [AGENTS.md](AGENTS.md).
 
-1. Build the plugin and install it as an Autodesk bundle in `%APPDATA%\Autodesk\ApplicationPlugins\NavisworksMcp.bundle`. The install builds the plugin once for each installed Navisworks, against that version's API, and puts every build in the one bundle:
+You need Windows, Node 24 or later, and Navisworks Manage 2024, 2027, or both. In a clone of this repo, run:
 
-	```
-	npm install
-	npm run install-plugin
-	```
+```powershell
+node scripts/setup.ts --client codex
+npm run doctor
+```
 
-2. Restart Navisworks. The plugin starts with it. It logs startup failures to `%LOCALAPPDATA%\navisworks-mcp\plugin.log`.
+Choose `codex`, `claude`, or `none`. Setup downloads and verifies the plugin release for this checkout's version, installs the bundle, and registers the selected client. No `npm install` is needed. If the release is unavailable, setup can build with VS 2022 Build Tools. See [AGENTS.md](AGENTS.md) for `--build`, offline `--zip` installs, and fixes.
 
-3. Register the server with your MCP client. For Claude Code:
+Start or restart Navisworks, then restart the MCP client. Call `status` to verify. Until Navisworks first loads the plugin, the server lists only `status`.
 
-	```
-	claude mcp add navisworks -- node C:\path\to\navisworks\server\main.ts
-	```
+For manual registration, use your absolute paths. Codex `config.toml`:
 
-The server lists its full tool catalog once Navisworks has started with the plugin at least once. Before that, it offers only `status`.
+```toml
+[mcp_servers.navisworks]
+command = 'C:\Program Files\nodejs\node.exe'
+args = ['C:\path\to\navisworks-mcp\server\main.ts']
+```
+
+Claude Code, in PowerShell:
+
+```powershell
+claude mcp add navisworks --scope user -- 'C:\Program Files\nodejs\node.exe' 'C:\path\to\navisworks-mcp\server\main.ts'
+```
 
 ## Use
 
