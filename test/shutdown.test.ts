@@ -36,3 +36,20 @@ test('a clash session creates no recovery file and exits after saving, reopening
 	}
 	assert.throws(() => process.kill(nw.pid, 0), { code: 'ESRCH' });
 });
+
+test('a test session autosaves nothing, whatever the open document is called', async () => {
+	const nw = await startSession();
+	const autosaves = join(process.env.APPDATA!, 'Autodesk', `Navisworks Manage ${navisworks().year}`, 'AutoSave');
+	// No session prefix: the harness cannot recognise an autosave of this document as a test file, so none may be written.
+	const stem = `unprefixed${process.pid}${Date.now()}`;
+	const model = join(nw.dir, `${stem}.ifc`);
+	try {
+		copyFileSync(nw.fixture, model);
+		await nw.call('apply', { ops: [{ op: 'open', path: model }] });
+		await nw.call('apply', { ops: [{ op: 'color', items: '?Item.Type = IfcWall', rgb: '#ff0000' }] });
+		await nw.call('script', { code: 'return Autodesk.Navisworks.Api.Interop.LcOpAutoSave.RequestAutoSave();' });
+		assert.deepEqual((existsSync(autosaves) ? readdirSync(autosaves) : []).filter((f) => f.startsWith(stem)), []);
+	} finally {
+		await nw.close();
+	}
+});
