@@ -203,6 +203,8 @@ namespace NavisworksMcp
         static Dictionary<Guid, ModelItem> ByGuid(Document doc, ICollection<Guid> want)
         {
             var found = new Dictionary<Guid, ModelItem>();
+            // NULL ModelItemID denotes a virtual/unlinked takeoff, not the first GUID-less model node.
+            want = new HashSet<Guid>(want.Where(g => g != Guid.Empty));
             if (want.Count == 0) return found;
             foreach (var x in doc.Models.RootItemDescendantsAndSelf)
             {

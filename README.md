@@ -51,7 +51,7 @@ The agent sees seven tools:
 
 Lists return a handle such as `r3` with an exact total. Pass the handle, a slice of it (`r3#0-9`), `selection`, `set:Folder/Name`, `id:0:0/2/1` or an inline search (`?Item.Type = IfcWall`) wherever an op takes items, instead of copying rows. Searches use `Tab.Prop op value` joined by `and` and `or`, and run as native Navisworks searches.
 
-Navisworks 2027 opens IFC with Conversion Method v4 by default, which gives elements no GUID, so Quantification can't take them off. For takeoff from IFC on 2027, set Options > File Readers > IFC > Conversion Method to v3 and reopen the model. v3 converts in a separate SceneConvertServer process that needs a .NET 10 runtime matching the installed ASP.NET Core runtime. Without one, that process crashes on load.
+Navisworks 2027 opens IFC with Conversion Method v4 by default. Its GUID-less elements cannot be linked to native Quantification takeoffs: Autodesk's UI takeoff command rejects them, and the API's `ModelItem` overload creates unlinked rows with a NULL `TK_Object.ModelItemID`. The MCP leaves these items out and reports the count; it does not substitute virtual takeoffs or invent model identities. Virtual/unlinked rows read as `-` in the model-item column. For linked takeoff from IFC on 2027, set Options > File Readers > IFC > Conversion Method to v3 and reopen the model. v3 converts in a separate SceneConvertServer process that needs a .NET 10 runtime matching the installed ASP.NET Core runtime. Without one, that process crashes on load.
 
 Lengths are in mm, areas in m2, volumes in m3, and dates in ISO format. Every error ends with `next:`, the exact call or action that fixes it.
 

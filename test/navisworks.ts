@@ -6,7 +6,7 @@ import { basename, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { navisworks, type Navisworks } from '../scripts/plugin.ts';
+import { navisworks } from '../scripts/plugin.ts';
 import { writeIfc } from './fixture/ifc.ts';
 
 const nw = navisworks();
@@ -20,12 +20,7 @@ const autoRecoverKey = `HKCU\\Software\\Autodesk\\Navisworks Manage\\${nw.api}.0
 /// Opening it into an empty launch instead races Navisworks startup, which fails the open or replaces the document with Untitled.
 /// Both versions can autosave during a test, then prompt "Reload from Auto-Save?" on a deferred first idle, blocking clean exit.
 /// 2027's default IFC reader gives no item an InstanceGuid, which takeoff needs; Conversion Method v3 reads them as 2024 does.
-const sessionOptions: Partial<Record<Navisworks['year'], string>> = {
-	2024: '<optionset name="general"><optionset name="autosave"><option name="enable"><data type="bool">false</data></option></optionset></optionset>',
-	2027:
-		'<optionset name="general"><optionset name="autosave"><option name="enable"><data type="bool">false</data></option></optionset></optionset>' +
-		'<optionset name="file_readers"><optionset name="LcNwcLoaderPlugin:lcldifc"><option name="load_method"><data type="name"><name internal="lcldifc_load_method:2">v3</name></data></option></optionset></optionset>',
-};
+const autoSaveOptions = '<optionset name="general"><optionset name="autosave"><option name="enable"><data type="bool">false</data></option></optionset></optionset>';
 
 /// Navisworks offers to reload whatever these values name on its next start, the user's own start included.
 function clearAutoRecover(sessionDir: string) {
@@ -53,14 +48,16 @@ export type Session = {
 	close: () => Promise<void>;
 };
 
-export async function startSession(): Promise<Session> {
+export async function startSession({ ifcConversion = 'v3' }: { ifcConversion?: 'v3' | 'v4' } = {}): Promise<Session> {
 	const dir = mkdtempSync(join(tmpdir(), 'nmcp-'));
 	// Navisworks names autosaves after the document, so a per-session prefix keeps cleanup to our own files.
 	const tag = randomBytes(4).toString('hex');
 	const path = (...parts: string[]) => join(dir, ...parts.slice(0, -1), `${tag}-${parts.at(-1)}`);
 	const fixture = path('fixture.ifc');
 	writeIfc(fixture);
-	const options = sessionOptions[nw.year];
+	const options = autoSaveOptions + (nw.year === 2027
+		? `<optionset name="file_readers"><optionset name="LcNwcLoaderPlugin:lcldifc"><option name="load_method"><data type="name"><name internal="lcldifc_load_method:${ifcConversion === 'v3' ? 2 : 3}">${ifcConversion}</name></data></option></optionset></optionset>`
+		: '');
 	const optionsFile = path('options.xml');
 	if (options) writeFileSync(optionsFile, `<?xml version="1.0" encoding="UTF-8" ?>
 <exchange xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://download.autodesk.com/us/navisworks/schemas/nw-exchange-12.0.xsd"><optionset name="">${options}</optionset></exchange>
