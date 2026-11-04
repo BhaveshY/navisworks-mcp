@@ -1,5 +1,6 @@
+import { navisworks } from '../scripts/plugin.ts';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { cpSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { boxes, overlaps, storeys, type Box } from './fixture/scene.ts';
@@ -163,7 +164,7 @@ test('reports write one image per result in html and one row per result in csv',
 	assert.equal(readdirSync(join(dir, 'ducts_images')).length, hardDuctsWalls.length);
 
 	const csv = readFileSync(join(dir, 'ducts.csv'), 'utf8').trim().split('\r\n');
-	assert.equal(csv[0]!.replace(/^\uFEFF/, ''), 'clash,status,dist,item1,id1,item2,id2,level,grid,assigned,centre,group');
+	assert.equal(csv[0]!.replace(/^\uFEFF/, ''), 'clash,status,dist,item1,id1,item2,id2,level,grid,assigned,centre,group,level_source,comments,comment');
 	assert.equal(csv.length - 1, hardDuctsWalls.length);
 });
 
@@ -242,4 +243,63 @@ test('unknown rules fail before changing a test or creating its selection sets',
 		assert.equal(await nw.call('read', { what: 'tests' }), before);
 		assert.equal(await nw.call('read', { what: 'sets' }), sets);
 	}
+});
+
+
+test('F3 clash regressions', async (t) => {
+	const apply = (...ops: Record<string, unknown>[]) => nw.call('apply', { ops });
+	const handle = (text: string) => /\b(r\d+)\b/.exec(text)![1]!;
+	await apply({op:'open',path:nw.fixture});
+	await apply({op:'clash.add',name:'F3',a:'?Item.Type = IfcDuctSegment',b:'?Item.Type = IfcWall'});
+	await apply({op:'clash.run',test:'F3'});
+	await t.test('C12 negative tolerance fails preview and mutation without changing a test', async () => {
+		for (let repeat = 0; repeat < 2; repeat++) for (const preview of [true, false]) {
+			for (const op of [{ op: 'clash.update', test: 'F3', tol: -1 }, { op: 'clash.add', name: 'Negative', a: 'all', b: 'all', tol: -1 }]) {
+				const result = await nw.callRaw('apply', { ops: [op], preview });
+				assert.equal(result.isError, true, result.text);
+				assert.match(result.text, /bad_args:.*tol.*(?:non-negative|>= 0)/);
+			}
+			assert.doesNotMatch(await nw.call('read', { what: 'tests' }), /Negative|\|-1\|/);
+		}
+	});
+	await t.test('C9 clash comments survive save/reopen and appear in reads and both report formats', async () => {
+		for (let repeat = 0; repeat < 2; repeat++) {
+			const ref = handle(await nw.call('read', { what: 'clashes', test: 'F3' }));
+			const body = `F3 review ${repeat}: reroute <duct> & verify`;
+			await apply({ op: 'clash.edit', items: `${ref}#0`, comment: body, assign: 'Coordinator' });
+			const path = nw.path(`comments-${repeat}.nwd`);
+			await nw.call('export', { out: [{ what: 'nwd', path }] });
+			await apply({ op: 'open', path });
+			assert.ok((await nw.call('read', { what: 'clashes', test: 'F3' })).includes(body));
+			for (const format of ['html', 'csv']) {
+				const report = nw.path(`comments-${repeat}.${format}`);
+				await nw.call('export', { out: [{ what: 'clash_report', test: 'F3', format, images: false, path: report }] });
+				assert.ok(readFileSync(report, 'utf8').includes(format === 'html' ? body.replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('& verify', '&amp; verify') : body));
+			}
+		}
+	});
+	await t.test('C10 levels fall back to real item properties with explicit provenance', async () => {
+		const source = join(navisworks().dir, 'Samples', 'Getting Started');
+		const dest = join(nw.dir, 'trio');
+		cpSync(source, dest, { recursive: true });
+		await apply({ op: 'open', path: join(dest, 'MEP.nwc') });
+		await apply({ op: 'append', paths: [join(dest, 'Structure.nwc')] });
+		await apply({ op: 'clash.add', name: 'Levels', a: '?Element.Category = Ducts', b: '?Element.Category = Structural Framing' });
+		await apply({ op: 'clash.run', test: 'Levels' });
+		for (let repeat = 0; repeat < 2; repeat++) {
+			const text = await nw.call('read', { what: 'clashes', test: 'Levels', group: 'level', limit: 50 });
+			assert.match(text, /item[12]\.Element\.Reference Level/);
+			assert.doesNotMatch(text, /by level: - \d+\n/);
+			const lines = text.split('\n');
+			const header = lines.find(l => l.startsWith('#|'))!.split('|');
+			for (const line of lines.filter(l => /^\d+\|/.test(l))) {
+				const row = Object.fromEntries(line.split('|').map((v, i) => [header[i]!, v]));
+				if (row.level_source!.startsWith('item')) {
+					const match = /^item([12])\.(.+)$/.exec(row.level_source!)!;
+					const value = await nw.call('read', { what: 'items', in: `id:${row['id' + match[1]]}`, cols: match[2] });
+					assert.ok(value.includes('|' + row.level), `${line}\n${value}`);
+				}
+			}
+		}
+	});
 });

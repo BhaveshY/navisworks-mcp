@@ -28,5 +28,6 @@ namespace NavisworksMcp
         public static void SetAssignedTo(DocumentClashTests data, IClashResult r, string name) => data.TestsEditResultAssignedTo(r, name.Length == 0 ? new Assignee() : new Assignee(name));
 
         public static Comment Comment(Document doc, string body, CommentStatus status, string author) => doc.CreateCommentWithUniqueId(body, status, new Assignee(author));
+        public static string CommentAuthor(Comment comment) => comment.Author?.DisplayName;
     }
 }
