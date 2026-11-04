@@ -1,6 +1,6 @@
 import { navisworks } from '../scripts/plugin.ts';
 import assert from 'node:assert/strict';
-import { copyFileSync, readFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { boxes } from './fixture/scene.ts';
@@ -235,6 +235,96 @@ test('F3 saved-viewpoint regressions', async (t) => {
 			await nw.call('export', { out: [{ what: 'image', path: image, w: 640, h: 400 }] });
 			const green = await script(`using(var b=new System.Drawing.Bitmap(${JSON.stringify(image)})){int green=0;for(int y=0;y<b.Height;y++)for(int x=0;x<b.Width;x++){var p=b.GetPixel(x,y);if(p.G>p.R+20&&p.G>p.B+20)green++;}return green;}`);
 			assert.ok(Number(green.replaceAll(',', '')) > 1000, `the green roof is visible (${green} pixels)`);
+		}
+	});
+});
+
+
+test('F3 noninteractive document and export errors', async (t) => {
+	const apply = (...ops: Record<string, unknown>[]) => nw.call('apply', { ops });
+	const script = async (code: string) => (await nw.call('script', { code })).replace(/\nundo:.*$/, '');
+	await apply({op:'open',path:nw.fixture});
+	await apply({op:'clash.add',name:'F3',a:'?Item.Type = IfcDuctSegment',b:'?Item.Type = IfcWall'});
+	await apply({op:'clash.run',test:'F3'});
+	await t.test('B3 B8 every export rejects bad destinations before native output and preserves existing bytes', async () => {
+		const outputs = [
+			{ what: 'image', ext: 'png', w: 32, h: 32 }, { what: 'csv', ext: 'csv', items: 'all' },
+			{ what: 'nwd', ext: 'nwd' }, { what: 'nwf', ext: 'nwf' },
+			{ what: 'clash_report', ext: 'html', test: 'F3', images: false }, { what: 'tasks_csv', ext: 'csv' },
+		];
+		for (let repeat = 0; repeat < 2; repeat++) for (const { ext, ...out } of outputs) {
+			const wrong = await nw.callRaw('export', { out: [{ ...out, path: nw.path('wrong.txt') }] });
+			assert.equal(wrong.isError, true, wrong.text);
+			assert.match(wrong.text, /error bad_args:.*(?:extension|end in)/);
+			const path = nw.path(`${out.what}-${repeat}.${ext}`);
+			writeFileSync(path, 'preserve these bytes');
+			for (const condition of ['readonly', 'locked', 'long', 'directory', 'denied', 'reserved', 'invalid', 'relative']) {
+				let target = path;
+				if (condition === 'readonly') await script(`System.IO.File.SetAttributes(${JSON.stringify(path)}, System.IO.FileAttributes.ReadOnly); return null;`);
+				if (condition === 'locked') await script(`AppDomain.CurrentDomain.SetData("F3lock",new System.IO.FileStream(${JSON.stringify(path)},System.IO.FileMode.Open,System.IO.FileAccess.ReadWrite,System.IO.FileShare.None)); return null;`);
+				if (condition === 'long') target = nw.path('x'.repeat(240) + '.' + ext);
+				if (condition === 'reserved') target = join(nw.dir, `CON.${ext}`);
+				if (condition === 'invalid') target = nw.path(`bad<name>.${ext}`);
+				if (condition === 'relative') target = `C:relative.${ext}`;
+				if (condition === 'directory') { target = nw.path(`directory-${out.what}-${repeat}.${ext}`); mkdirSync(target); }
+				const denied = nw.path(`denied-${out.what}-${repeat}`);
+				if (condition === 'denied') {
+					mkdirSync(denied); target = join(denied, `out.${ext}`);
+					await script(`var d=new System.IO.DirectoryInfo(${JSON.stringify(denied)});var acl=d.GetAccessControl(System.Security.AccessControl.AccessControlSections.Access);AppDomain.CurrentDomain.SetData("F3acl",acl.GetSecurityDescriptorBinaryForm());acl.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(System.Security.Principal.WindowsIdentity.GetCurrent().User,System.Security.AccessControl.FileSystemRights.Write,System.Security.AccessControl.InheritanceFlags.ContainerInherit|System.Security.AccessControl.InheritanceFlags.ObjectInherit,System.Security.AccessControl.PropagationFlags.None,System.Security.AccessControl.AccessControlType.Deny));d.SetAccessControl(acl);return null;`);
+				}
+				try {
+					const result = await nw.callRaw('export', { out: [{ ...out, path: target }] });
+					assert.equal(result.isError, true, result.text);
+					assert.match(result.text, /error (?:bad_args|not_found):/);
+					assert.doesNotMatch(result.text, /next: (?:job|.*help)/);
+				} finally {
+					if (condition === 'readonly') await script(`System.IO.File.SetAttributes(${JSON.stringify(path)}, System.IO.FileAttributes.Normal); return null;`);
+					if (condition === 'locked') await script('((IDisposable)AppDomain.CurrentDomain.GetData("F3lock")).Dispose(); AppDomain.CurrentDomain.SetData("F3lock",null); return null;');
+					if (condition === 'denied') await script(`var acl=new System.Security.AccessControl.DirectorySecurity();acl.SetSecurityDescriptorBinaryForm((byte[])AppDomain.CurrentDomain.GetData("F3acl"),System.Security.AccessControl.AccessControlSections.Access);new System.IO.DirectoryInfo(${JSON.stringify(denied)}).SetAccessControl(acl);AppDomain.CurrentDomain.SetData("F3acl",null);return null;`);
+				}
+				assert.equal(readFileSync(path, 'utf8'), 'preserve these bytes');
+				assert.match(await nw.call('status'), /doc /);
+			}
+		}
+	});
+	await t.test('C2 2D federation rejects append/merge without a modal and remains usable', async () => {
+		const dest = join(nw.dir, 'hospital');
+		cpSync(join(navisworks().dir, 'Samples', 'Quantification'), dest, { recursive: true });
+		for (let repeat = 0; repeat < 2; repeat++) {
+			await apply({ op: 'open', path: join(dest, 'Autodesk_Hospital_Sample.nwf') });
+			assert.equal(await script('return nw.Doc.ActiveSheetType;'), 'Sheet2D');
+			for (const op of ['append', 'merge']) for (const preview of [true, false]) {
+				const result = await nw.callRaw('apply', { ops: [{ op, paths: [join(dest, 'Autodesk_Hospital_Architectural.nwc')] }], preview });
+				assert.equal(result.isError, true, result.text);
+				assert.match(result.text, /bad_args:.*2D sheet/);
+				assert.match(await nw.call('status'), /doc /);
+			}
+			await apply({ op: 'open', path: nw.fixture });
+			assert.match(await nw.call('read', { what: 'items', where: 'Item.Type = IfcWall' }), /W-South/);
+		}
+	});
+	await t.test('C2 corrupt, unsupported and missing-reference inputs return errors without blocking subsequent calls', async () => {
+		const corrupt = nw.path('corrupt.nwd');
+		const unsupported = nw.path('unsupported.xyz');
+		writeFileSync(corrupt, 'not a Navisworks file');
+		writeFileSync(unsupported, 'no reader for this format');
+		const reference = nw.path('removed-reference.ifc');
+		const federation = nw.path('missing-reference.nwf');
+		copyFileSync(nw.fixture, reference);
+		await apply({ op: 'open', path: reference });
+		await nw.call('export', { out: [{ what: 'nwf', path: federation }] });
+		await apply({ op: 'open', path: nw.fixture });
+		unlinkSync(reference);
+		const cache = reference.replace(/\.ifc$/, '.nwc');
+		if (existsSync(cache)) unlinkSync(cache);
+		for (let repeat = 0; repeat < 2; repeat++) for (const path of [corrupt, unsupported, federation]) for (const op of ['open', 'append', 'merge']) {
+			const result = await nw.callRaw('apply', { ops: [op === 'open' ? { op, path } : { op, paths: [path] }] });
+			assert.equal(result.isError, true, result.text);
+			assert.match(result.text, /error (?:bad_args|not_found):/);
+			assert.match(result.text, /next: /);
+			assert.doesNotMatch(result.text, /next: job /);
+			await apply({ op: 'open', path: nw.fixture });
+			assert.match(await nw.call('read', { what: 'items', where: 'Item.Type = IfcWall' }), /W-South/);
 		}
 	});
 });
