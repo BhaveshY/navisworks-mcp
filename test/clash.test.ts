@@ -248,7 +248,6 @@ test('unknown rules fail before changing a test or creating its selection sets',
 
 test('F3 clash regressions', async (t) => {
 	const apply = (...ops: Record<string, unknown>[]) => nw.call('apply', { ops });
-	const handle = (text: string) => /\b(r\d+)\b/.exec(text)![1]!;
 	await apply({op:'open',path:nw.fixture});
 	await apply({op:'clash.add',name:'F3',a:'?Item.Type = IfcDuctSegment',b:'?Item.Type = IfcWall'});
 	await apply({op:'clash.run',test:'F3'});
