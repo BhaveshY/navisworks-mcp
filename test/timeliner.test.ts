@@ -1,5 +1,6 @@
+import { navisworks } from '../scripts/plugin.ts';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { inflateSync } from 'node:zlib';
@@ -189,4 +190,37 @@ test('import reports a set name shared by two sets instead of failing', async ()
 	const r = await nw.callRaw('apply', { ops: [{ op: 'tl.import', csv }] });
 	assert.equal(r.isError, true);
 	assert.match(r.text, /error bad_args: op 0 \(tl\.import\) failed: 1 problem\(s\) in [0-9a-f]{8}-dup\.csv: line 2: no single set "Dup"\. nothing changed\nnext: .*nothing was imported/);
+});
+
+
+test('F3 legacy-model planned simulation', async (t) => {
+	const apply = (...ops: Record<string, unknown>[]) => nw.call('apply', { ops });
+	const script = async (code: string) => (await nw.call('script', { code })).replace(/\nundo:.*$/, '');
+	await t.test('A6 valid imported schedules simulate across fixture and legacy real documents', async () => {
+		const files = [nw.fixture, ...['bathcity/central.nwd', 'snowmobile.nwd', 'gatehouse/Gatehouse.dwg'].map(file => {
+			const dest = join(nw.dir, file.replaceAll('/', '-'));
+			copyFileSync(join(navisworks().dir, 'Samples', file), dest);
+			return dest;
+		})];
+		for (const file of files) {
+			t.diagnostic(`schedule model: ${file}`);
+			await apply({ op: 'open', path: file });
+			const items = await script('return nw.Handle(nw.Doc.Models.RootItemDescendantsAndSelf.Where(i => i.HasGeometry).Take(1000));');
+			await apply({ op: 'set.save', name: 'Schedule', items });
+			const csv = nw.path('schedule.csv');
+			writeFileSync(csv, 'Name,Start,End,Type,Set\nReal phase,2026-03-01,2026-03-31,Construct,Schedule\n');
+			for (let repeat = 0; repeat < 2; repeat++) {
+				await apply({ op: 'tl.import', csv, replace: true });
+				assert.match(await apply({ op: 'tl.simulate', at: '2026-03-15' }), /simulation at 2026-03-15; active: Real phase/, file);
+				assert.match(await nw.call('read', { what: 'tasks' }), /Real phase\|.*\|yes/);
+				assert.equal(await script('return Autodesk.Navisworks.Api.Interop.LcTlSimulationHelper.Instance.GetViewType();'), 'ePLANNED');
+				const exported = nw.path('verify-plan.csv');
+				await nw.call('export', { out: [{ what: 'tasks_csv', path: exported }] });
+				const [header, row] = readFileSync(exported, 'utf8').trim().split(/\r?\n/).map(line => line.replace(/^\uFEFF/, '').split(','));
+				assert.equal(row![header!.indexOf('ActualStart')], '');
+				assert.equal(row![header!.indexOf('ActualEnd')], '');
+				await apply({ op: 'tl.simulate', stop: true });
+			}
+		}
+	});
 });
