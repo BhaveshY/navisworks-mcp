@@ -24,7 +24,7 @@ function alive(pid: number) {
 	}
 }
 
-/// Live Navisworks instances, newest first. Registration files of dead processes are removed.
+/// Live Navisworks instances, newest first. Doctor preserves stale files during read-only discovery.
 export function instances(): Instance[] {
 	const dir = join(stateDir, 'instances');
 	let files: string[];
@@ -37,7 +37,7 @@ export function instances(): Instance[] {
 	for (const f of files) {
 		const pid = Number(f.slice(0, -5));
 		if (!alive(pid)) {
-			rmSync(join(dir, f), { force: true });
+			if (process.env.NAVISWORKS_MCP_READ_ONLY_DISCOVERY !== '1') rmSync(join(dir, f), { force: true });
 			continue;
 		}
 		try {
