@@ -18,9 +18,10 @@ const autoRecoverKey = `HKCU\\Software\\Autodesk\\Navisworks Manage\\${nw.api}.0
 /// Options a test Navisworks starts with, passed as -options: they hold for that process only and never reach the user's saved options.
 /// They reach only files opened after launch, so a version with options opens the fixture again once the command-line copy has loaded.
 /// Opening it into an empty launch instead races Navisworks startup, which fails the open or replaces the document with Untitled.
-/// 2027 autosaves during a test and sometimes answers with a modal "Reload from Auto-Save?" that blocks the clean exit.
+/// Both versions can autosave during a test, then prompt "Reload from Auto-Save?" on a deferred first idle, blocking clean exit.
 /// 2027's default IFC reader gives no item an InstanceGuid, which takeoff needs; Conversion Method v3 reads them as 2024 does.
 const sessionOptions: Partial<Record<Navisworks['year'], string>> = {
+	2024: '<optionset name="general"><optionset name="autosave"><option name="enable"><data type="bool">false</data></option></optionset></optionset>',
 	2027:
 		'<optionset name="general"><optionset name="autosave"><option name="enable"><data type="bool">false</data></option></optionset></optionset>' +
 		'<optionset name="file_readers"><optionset name="LcNwcLoaderPlugin:lcldifc"><option name="load_method"><data type="name"><name internal="lcldifc_load_method:2">v3</name></data></option></optionset></optionset>',
@@ -126,8 +127,8 @@ export async function startSession(): Promise<Session> {
 			// A killed Navisworks greets the next launch, the user's included, with a modal "reload last file?" dialog, so exit cleanly.
 			const exited = new Promise<boolean>((resolve) => {
 				if (roamer.exitCode !== null) return resolve(true);
-				roamer.once('exit', () => resolve(true));
-				setTimeout(() => resolve(false), 30000);
+				const timeout = setTimeout(() => resolve(false), 30000);
+				roamer.once('exit', () => { clearTimeout(timeout); resolve(true); });
 			});
 			await callRaw('script', { code: 'nw.Doc.Clear(); System.Diagnostics.Process.GetCurrentProcess().CloseMainWindow(); return "closing";' }).catch(() => {});
 			await client.close();

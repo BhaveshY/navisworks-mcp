@@ -146,7 +146,7 @@ function test(args: string[]) {
 		} catch (e) {
 			return { nw, pass: false, why: (e as Error).message };
 		}
-		const run = spawnSync(process.execPath, ['--test', '--test-concurrency=6', ...(files.length ? files : ['test/*.test.ts'])], {
+		const run = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...(files.length ? files : ['test/*.test.ts'])], {
 			cwd: root,
 			stdio: 'inherit',
 			env: { ...process.env, NAVISWORKS_VERSION: String(nw.year) },
